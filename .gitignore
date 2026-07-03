@@ -25,8 +25,8 @@ next-env.d.ts
 !.env.*.example
 
 # --- Local raw-file storage (dev; ingestion writes originals here) ------------
-# Uncomment once M1 lands and picks a path:
-# backend/storage/
+# M1 (LocalDiskStorage) writes raw originals here; never commit them.
+backend/storage/
 
 # --- Editors / IDEs ---
 .vscode/

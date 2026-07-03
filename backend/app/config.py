@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Origins allowed to call the API from a browser. Comma-separated in env.
     cors_origins: str = "http://localhost:3000"
 
+    # Root directory where raw ingested files are stored on local disk (M1). Relative
+    # paths resolve against the backend process's working directory, so the default
+    # lands at backend/storage/ (git-ignored). Swapped for an S3 bucket later.
+    storage_dir: str = "storage"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
