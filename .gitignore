@@ -1,0 +1,37 @@
+# --- Python / backend ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# --- Node / frontend ---
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# --- Env / secrets ------------------------------------------------------------
+# Never commit real values. The *.example templates ARE committed (placeholders
+# only). This pattern ignores .env and any variant (.env.local, .env.production,
+# a future .env with a Gemini/AWS/Supabase key) while re-including the templates.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# --- Local raw-file storage (dev; ingestion writes originals here) ------------
+# Uncomment once M1 lands and picks a path:
+# backend/storage/
+
+# --- Editors / IDEs ---
+.vscode/
+.idea/
+
+# --- OS ---
+.DS_Store
+Thumbs.db

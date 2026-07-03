@@ -1,0 +1,25 @@
+# Tooling config only. Dependencies live in requirements*.txt (pip + venv),
+# per the Phase 0 decision.
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: pyflakes+pycodestyle, I: isort, UP: pyupgrade, B: bugbear.
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom puts Depends()/Query()/etc. in argument
+# defaults on purpose; whitelist them so B008 doesn't flag valid code.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+]

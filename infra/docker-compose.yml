@@ -1,0 +1,42 @@
+services:
+  # Postgres with the pgvector extension pre-baked into the image.
+  # We use the official pgvector image so we don't have to compile the
+  # extension ourselves; pg16 matches what we'll run on Supabase later.
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: prodrag-postgres
+    environment:
+      POSTGRES_USER: prodrag
+      POSTGRES_PASSWORD: prodrag
+      POSTGRES_DB: prodrag
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume => data survives `docker compose down` (but not `down -v`).
+      - pgdata:/var/lib/postgresql/data
+      # Anything in /docker-entrypoint-initdb.d runs ONCE, on first init of an
+      # empty data dir. This is where we CREATE EXTENSION vector.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # pg_isready lets other services / our tooling wait until Postgres can
+      # actually accept connections, not just until the container is "up".
+      test: ["CMD-SHELL", "pg_isready -U prodrag -d prodrag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis is up so the infra is complete, but NOTHING is wired to it yet.
+  # Celery/broker/cache arrive in the ingestion phase.
+  redis:
+    image: redis:7
+    container_name: prodrag-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
