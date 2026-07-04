@@ -1,6 +1,7 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-03 (M1 complete). Read this + `CLAUDE.md` to pick up where we left off._
+_Last updated: 2026-07-04 (M1 complete; locked "ingestion is job-shaped" + "build with scaling
+in mind" principle). Read this + `CLAUDE.md` to pick up where we left off._
 _Cross-session decisions also live in auto-memory (`MEMORY.md` is loaded every session)._
 
 ## Where we are
@@ -86,6 +87,20 @@ concrete class. Deferred with no rework: `S3Storage` behind the same Protocol; `
   S3 yet), **local Unstructured** library, **real** `gemini-embedding-2` @ 768d
   (`RETRIEVAL_DOCUMENT`). Deferred with no rework: Celery/Redis async, S3, keyword engine +
   BM25 index, RLS enforcement, observability, the whole query pipeline (Phase 2).
+- **Ingestion must be JOB-SHAPED, not request-shaped** (decided 2026-07-04; this is what makes
+  the "Celery later = no rework" claim actually true). M6 orchestrator = a self-contained
+  coroutine keyed on `document_id`, returns nothing to a waiting caller (reads bytes via
+  `get_storage().load()`, does parse→chunk→embed→write, drives `documents.status`). M7 upload
+  endpoint = persist file + insert `documents` row as `pending` + kick off the job + return
+  **202 + doc id**; client polls `status` until `ready`. Synchronous execution for now, but
+  enqueue-and-process in shape, so Celery is a one-line swap (`await orchestrate(id)` →
+  `orchestrate.delay(id)`) — NOT an endpoint/contract rewrite. The `documents.status` machine
+  and `checksum` column already anticipate this. (This is the guardrail behind the CLAUDE.md
+  "build with scaling in mind" principle; see memory `phase1-ingestion`.)
+  - Watch-list (not blockers, don't reshape data): config's single `database_url` may grow a
+    second (pooled Supavisor/transaction-mode worker URL + session URL) once Celery + RLS land;
+    build M4 embedding **batched** (N chunks/request + retry/backoff) from the start — same
+    shape locally and at scale, touches only the orchestrator.
 - **Evaluation = a substrate, not a phase:** golden set + ingestion-side metrics start now;
   the RAGAS harness + per-query log switch on in Phase 2. The M6 orchestrator must emit
   structured metrics. (Memory: `phase1-ingestion`.)

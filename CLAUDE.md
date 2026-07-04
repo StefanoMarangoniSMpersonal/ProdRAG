@@ -11,6 +11,11 @@ A production-oriented **RAG system**, built as a solo learning project. Not depl
 scale and single-tenant, but engineered with production patterns so I learn every layer
 properly. **The goal is understanding, not just a working demo.**
 
+**Build with scaling in mind.** The system will not *operate* at scale, but every layer must
+be *shaped* so it could: the data model, keys, tenancy columns, and interfaces take their
+scaled form now, while implementations stay naive/local behind seams — so scaling later is a
+drop-in swap, never a reshape of data or callers.
+
 ## How I want you (Claude Code) to work with me
 
 This is a **learn-by-building** project. You are the implementer and tutor; **I am the
@@ -97,6 +102,13 @@ architect**. Therefore:
   the answer, and token/cost usage. This log is the raw material for evaluation.
 - Anything with side effects (deploys, destructive migrations) is **manual-invoke only** —
   never auto-run it because the code "looks ready."
+- **Ingestion is job-shaped, not request-shaped** (a consequence of "build with scaling in
+  mind"): the orchestrator (M6) is a self-contained coroutine keyed on `document_id` that
+  returns nothing to a waiting caller; the upload endpoint (M7) persists the file, inserts the
+  `documents` row as `pending`, kicks off that job, and returns **202 + the doc id** — the
+  client polls `status` until `ready`. Runs synchronously now (naive-first), but structured as
+  enqueue-and-process so adding Celery is a one-line swap (`await orchestrate(id)` →
+  `orchestrate.delay(id)`), never a rewrite of the endpoint or the client contract.
 - Keep LangChain thin: use it for integrations, let **LangGraph** own control flow.
 
 ## Commands
