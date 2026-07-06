@@ -4,10 +4,9 @@
 > changelog as milestones land — don't re-derive from scratch each time.
 > Companion to `docs/HANDOFF.md` (session state) and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-06 — M4 (embed) landed, then corrected: `gemini-embedding-2` has no
-> `task_type`, so the doc/query role is now a text prefix (`as_retrieval_document` /
-> `as_retrieval_query`) and `embed_texts` takes plain `list[str]`. Live test confirms the model
-> ID against the real API._
+> _Last updated: 2026-07-06 — M5 (write) landed: `write_chunks` maps chunk elements + M4
+> vectors → `chunks` rows (flush, no commit; M6 owns the txn). First real-DB test in the repo
+> — a throwaway `testcontainers` pgvector container + a rolled-back per-test session._
 
 ## How to read the scores
 
@@ -28,7 +27,7 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 1 | Presentation (Frontend) | Next.js chat/upload UI, streaming, auth session | ~5% | **~10%** |
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~15% | **~25%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~5% | **~25%** |
-| 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~55% | **~62%** |
+| 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~70% | **~76%** |
 | 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~0% | **~15%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~55% | **~70%** |
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
@@ -36,7 +35,7 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
 
-**Weighted overall: ~12–15% (code-only) · ~30% (code + design).**
+**Weighted overall: ~15–17% (code-only) · ~32% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -79,7 +78,7 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
 | M2 | Parse (Unstructured path → typed elements; `infer_table_structure=True`; PDF default `hi_res`) | ✅ complete & verified — text + PDF `hi_res` table path both under automated test |
 | M3 | Chunk (`by_title`; `max_characters=1500`, `combine_text_under_n_chars=500`; carries `text_as_html` onto the isolated Table chunk) | ✅ complete & verified — grouping + hard-cap + table `text_as_html` all under automated test |
 | M4 | Embed (`gemini-embedding-2` @768d, batched; role via text **prefix** helpers — v2 has no `task_type`; v2 auto-normalizes + defensive L2; **interface A** — `embed_texts(list[str])`, reused at query time, enrich resolves `embed_text` upstream) | ✅ complete & verified — order/batching/no-`task_type`+dims/prefix-format/empty/unit-length under mock test; 1 opt-in live test passed against real Gemini (deselected, not skipped) |
-| M5 | Write (elements → `Chunk` ORM rows + vectors; set `element_type`, store `text_as_html` in `metadata` JSONB) | ⬜ next up |
+| M5 | Write (elements → `Chunk` ORM rows + vectors; set `element_type`, store `text_as_html` in `metadata` JSONB) | ✅ complete & verified — `write_chunks` flushes (no commit; M6 owns the txn); mining + pgvector/JSONB round-trip under a real-Postgres testcontainers test |
 | M-enrich | LLM summary for `Table`/`Image` chunks → fills `embed_text` (runs between M3 and M4) | ⬜ deferred — gated on eval; needs a generation LLM client |
 | M6 | Orchestrator (self-contained coroutine keyed on `document_id`) | ⬜ |
 | M7 | Upload endpoint (persist + `pending` row + kick job + 202 + doc id) | ⬜ |
@@ -93,12 +92,30 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
   deliberate trade to keep the table-structure guarantee under automated red/green.
 - **Repo-wide lint not green** — an `app/models.py` M0 comment exceeds 88 chars (ruff E501 /
   black). Everything else is clean.
-- **M4 not yet committed** — M2+M3 are committed & pushed; the M4 embed work, the parse
-  concurrency-footgun comment, and these doc refreshes sit uncommitted in the working tree
-  (user commits manually). See HANDOFF "Git state".
+- **M4 + M5 committed but UNPUSHED** — M2+M3 are committed & pushed; M4 (`1a52ade`) and the M5
+  write stage (this commit: `write.py`, `conftest.py`, `test_write.py`, the `testcontainers`
+  dev dep, + these doc refreshes) are committed locally, awaiting `git push`. See HANDOFF
+  "Git state".
 
 ## Changelog
 
+- **2026-07-06** — M5 (write) complete. `app/ingest/write.py` `write_chunks(session,
+  document_id, chunks, embeddings, *, owner_id)`: the translation boundary that maps each
+  Unstructured chunk element + its aligned M4 vector into a `Chunk` ORM row. Two aligned
+  lists (never `embed(content)`) so the deferred enrich seam lands with zero M5 change; a
+  length-mismatch raises before any DB work. `flush` but **no commit** — M6 owns the
+  transaction (chunk-write + `documents.status` commit together). Mines `section_title`
+  (first `Title` in `orig_elements`), `page_number`, `element_type` (`type().__name__`),
+  and lands a table's `text_as_html` in the `metadata` JSONB; `token_count` stays NULL
+  (deferred). **First real-DB test in the repo:** new `backend/tests/conftest.py` boots a
+  throwaway `pgvector/pgvector:pg16` **testcontainers** container once per session, applies
+  `002_schema.sql` (via a raw asyncpg connection — SQLAlchemy's asyncpg dialect can't run a
+  multi-statement script), and a function-scoped `db_session` wraps each test in a rolled-
+  back transaction. 4 immutable tests (1 offline length guard + 3 real-DB round-trips using
+  synthetic elements + synthetic 768-float vectors, so no paid Gemini call and no
+  poppler/tesseract). Suite now **21 collected → 20 passed, 1 deselected (live), 0
+  skipped** (was 16+1); touched files lint-clean. New dev dep
+  `testcontainers[postgres]==4.14.2` (needs a running Docker daemon; no psycopg2).
 - **2026-07-06** — M4 (embed) complete. `app/ingest/embed.py` `embed_texts(list[str])` via
   Gemini (`google-genai==2.10.0`, async `client.aio`); **interface A** (pure text embedder,
   reused at query time), batched, empty→[], 768-dim vectors. **Role via text prefix, not

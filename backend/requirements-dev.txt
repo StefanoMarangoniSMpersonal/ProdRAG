@@ -3,3 +3,8 @@ ruff==0.8.4
 black==24.10.0
 pytest==8.3.4
 pytest-asyncio==0.25.2
+# M5 write tests hit a REAL Postgres via a throwaway pgvector container the suite boots
+# and destroys itself (backend/tests/conftest.py). Needs a running Docker daemon; the
+# `[postgres]` extra pulls the `docker` SDK. No psycopg2 needed — testcontainers 4.x
+# probes readiness by exec'ing psql INSIDE the container, and we connect with asyncpg.
+testcontainers[postgres]==4.14.2

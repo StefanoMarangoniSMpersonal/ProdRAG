@@ -1,8 +1,9 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-06 (M4 embed landed test-first, then corrected — `gemini-embedding-2`
-has no `task_type`, role is now a text prefix; M2+M3 committed and **pushed**, M4 + the parse
-concurrency-footgun note in the working tree, uncommitted)._
+_Last updated: 2026-07-06 (M5 write landed test-first — `write_chunks` maps chunk elements +
+M4 vectors → `chunks` rows, flush/no-commit; first real-DB test via a throwaway
+`testcontainers` pgvector container. M2+M3 **pushed**; M4 (`1a52ade`) + M5 committed locally
+but **not yet pushed**)._
 _Read this + `CLAUDE.md` (the constitution) to pick up. Companions: `docs/PROGRESS.md`
 (layer-by-layer % tracker) and auto-memory (`MEMORY.md`, loaded every session) for
 cross-session decisions. This file keeps only what's live + what's next — settled detail
@@ -12,14 +13,16 @@ lives in the code, PROGRESS.md, and memory._
 
 - **Done & verified:** Phase 0 spine (Next.js → FastAPI → Postgres/pgvector → back),
   and Phase 1 **M0** (schema), **M1** (storage seam), **M2** (parse), **M3** (chunk),
-  **M4** (embed). Suite = **16 tests** green + **1 live deselected** (6 storage + 3 parse
-  + 2 chunk + 5 embed). Per-milestone shapes are in "Reference" below; % in `PROGRESS.md`.
-- **Next up: Phase 1 · M5 — write.** Map each chunk → a `Chunk` ORM row + its vector: set
-  `content`, `embedding` (from M4), `ordinal`, `element_type`, `section_title`,
-  `page_number`, and carry `text_as_html` into `chunks.metadata` (JSONB). Persist under the
-  DEV owner for now (RLS comes later). The `embed_text` seam is M6's concern (it assembles
-  the strings M4 embeds); M5 just writes what it's given. Then M6 orchestrator
-  (parse→chunk→embed→write, drives `documents.status`) → M7 upload endpoint.
+  **M4** (embed), **M5** (write). Suite = **20 tests** green + **1 live deselected** (6
+  storage + 3 parse + 2 chunk + 5 embed + 4 write). Per-milestone shapes are in "Reference"
+  below; % in `PROGRESS.md`.
+- **Next up: Phase 1 · M6 — orchestrator.** A self-contained coroutine keyed on
+  `document_id`: read bytes via `get_storage().load()`, run parse→chunk→embed→write, drive
+  `documents.status` (`pending`→`processing`→`ready`/`failed`), own the commit. It assembles
+  the strings M4 embeds — today just each chunk's `content` (the `embed_text` seam) — and
+  hands `write_chunks` the elements + aligned vectors. Then **M7** upload endpoint (persist
+  file + insert `documents` `pending` + kick job + 202 + doc id). M5's `write_chunks` is
+  ready and tested; M6 is its first caller.
 - **Test-first & immutable is a hard rule** (governs M4 on): write the failing test first;
   once written a test is immutable — fix the code, never the test; if the spec is wrong,
   stop and ask. Full text in `CLAUDE.md`; memory `testing-test-first-immutable`.
@@ -41,6 +44,11 @@ lives in the code, PROGRESS.md, and memory._
   (`test_parse_pdf_hi_res_infers_table_structure`, `test_chunk_pdf_table_keeps_text_as_html`)
   drive `fixtures/quarterly_report.pdf` and **need poppler + tesseract** (download the table
   model on first run) — they ERROR loudly, never SKIP, if the binaries are absent.
+- **M5 write tests need a running Docker daemon.** `test_write.py`'s DB tests spin up a
+  throwaway `pgvector/pgvector:pg16` container via **testcontainers** (`backend/tests/
+  conftest.py`), so a plain `pytest` now requires Docker Desktop up — they ERROR (never SKIP)
+  if the daemon is down. Install the dev dep once: `backend\.venv\Scripts\pip install -r
+  backend\requirements-dev.txt` (adds `testcontainers[postgres]`; no psycopg2 needed).
 
 ## Repo state (what exists)
 
@@ -51,8 +59,10 @@ lives in the code, PROGRESS.md, and memory._
 - **`/backend`** — FastAPI (pip + venv). `GET /health` + `/health/db`; async DB in `app/db.py`
   (SQLAlchemy 2.x + asyncpg); `app/config.py` settings; `app/models.py` (`Document` + `Chunk`);
   `app/storage/` (M1 seam); `app/ingest/` (`parse.py` M2, `chunk.py` M3, `embed.py` M4,
-  `inspect.py` the `/ingest-inspect` CLI). `unstructured[md,pdf]==0.23.1` + `pgvector` +
-  `google-genai==2.10.0` in `requirements.txt`.
+  `write.py` M5, `inspect.py` the `/ingest-inspect` CLI). `unstructured[md,pdf]==0.23.1` +
+  `pgvector` + `google-genai==2.10.0` in `requirements.txt`; `testcontainers[postgres]
+  ==4.14.2` in `requirements-dev.txt` (M5's real-DB tests). `tests/conftest.py` is the new
+  testcontainers Postgres harness (session container + rolled-back per-test session).
 - **`/frontend`** — Next.js (App Router, TS, Tailwind v4); fetches `/health/db`, builds clean.
 - **Tooling** — `dev.ps1` / `stop.ps1`; `README.md` is the GitHub front page; `.gitignore`
   hardened (no `.env*` leaks — `backend/.env` is git-ignored).
@@ -60,16 +70,17 @@ lives in the code, PROGRESS.md, and memory._
 ## Git state
 
 - Remote: **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **Local `main` is
-  in sync with `origin/main`** (all pushed).
+  2 commits ahead of `origin/main`** — M4 and M5 are committed locally but **not yet pushed**.
 - **Pushed** history: `7030286` (README stub) → `869aaef` (Phase 0 + M0) → `771be9a` (M1) →
   `b252671` (scaling principle + job-shaped ingestion docs) → `3751bcb` (M2: parse + inspect
-  CLI) → `fa8f3ff` (M3: chunk + inspect chunk view; docs/tracker updates rode in here). No
-  `Co-Authored-By` trailer (user preference).
-- **Uncommitted working-tree edits** (not yet on any commit): the **M4 embed** work
-  (`app/ingest/embed.py`, `tests/test_embed.py`, `config.py` fields, `requirements.txt` +
-  `google-genai`, `pytest.ini` `live` marker), the **M2 parse concurrency-footgun** comment, and
-  the HANDOFF/PROGRESS/memory refreshes — commit when ready. Plus `backend/tests/fixtures/Proactive
-  Autoscaling.pdf`, a personal corpus doc no test references, left untracked on purpose.
+  CLI) → `fa8f3ff` (M3: chunk + inspect chunk view; docs/tracker updates rode in here).
+- **Committed but UNPUSHED:** `1a52ade` (M4: embed — `gemini-embedding-2`, prefix roles, 768d;
+  the parse concurrency-footgun comment rode in here) → the **M5 write** commit (`write.py`,
+  `test_write.py`, `conftest.py` testcontainers harness, `requirements-dev.txt` +
+  `testcontainers`, and the HANDOFF/PROGRESS refreshes). No `Co-Authored-By` trailer (user
+  preference). `git push` when ready.
+- **Working tree otherwise clean**, except `backend/tests/fixtures/Proactive Autoscaling.pdf`
+  — a personal corpus doc no test references, left untracked on purpose.
 - **Credentials:** none in the repo. The PAT used for an earlier push was exposed in chat —
   **revoke it**; use `gh auth login` or SSH next time.
 - Auto-memory files live outside the repo (not in git).
@@ -158,6 +169,22 @@ empty→[], unit-length); 1 `@pytest.mark.live` test hits real Gemini (passed 20
 does not populate; and `env_file=".env"` resolves against CWD, so a real `Settings` call also
 needs CWD=`backend/`).
 
+**M5 write.** `async write_chunks(session, document_id, chunks, embeddings, *,
+owner_id=DEV_OWNER_ID) -> list[Chunk]` (`app/ingest/write.py`) — the **translation boundary**:
+maps each M3 chunk `Element` + its index-aligned M4 vector into a `Chunk` ORM row. **Two aligned
+lists, not `embed(content)`** — a length mismatch raises `ValueError` *before* any DB work
+(mis-pairing vectors↔text is the worst corruption); this shape absorbs the deferred enrich seam
+(embed a summary while `content` stays raw) with zero M5 change. **`flush` but NO commit** — M6
+owns the transaction so chunk-write + `documents.status` commit together. Pure `_chunk_to_row`
+mines `section_title` (first `Title` in `metadata.orig_elements`), `page_number`, `element_type`
+(`type(el).__name__` → `CompositeElement`/`Table`), `char_count`, and lands a table's
+`text_as_html` in the `metadata` JSONB (never the embedded text); `token_count` stays NULL
+(deferred). **Test = 1 offline guard + 3 real-DB round-trips** (`test_write.py`) over a throwaway
+`testcontainers` pgvector container (`conftest.py`: session container + rolled-back per-test
+`db_session`); schema applied via a **raw asyncpg** connection (SQLAlchemy's asyncpg dialect
+can't run a multi-statement `.sql`). Vectors + elements are **synthetic** (no paid Gemini, no
+poppler/tesseract) — the end-to-end parse→…→write proof is M6's job.
+
 **M2 parse concurrency footgun (documented, deferred — Option A).** parse's `to_thread` uses the
 shared default pool; safe because ingestion is job-shaped (1 doc/job, Celery `--concurrency`
 bounds cross-doc), but a future in-process `gather` over many parses would OOM under hi_res. A
@@ -193,17 +220,19 @@ comment on the seam records the fix (an `asyncio.Semaphore` if a batch caller ev
 
 ## Suggested first moves next session
 
-1. **M5 (write), test-first:** failing write test first, then map each chunk → a `Chunk` ORM row
-   + vector: `content`, `embedding` (from M4), `ordinal`, `element_type`, `section_title`,
-   `page_number` (mine the last three from `metadata.orig_elements`), and `text_as_html` into the
-   `metadata` JSONB. DEV owner for now. Needs a DB session seam (async SQLAlchemy); the M4
-   `embed_text` selection is M6's job, not M5's — M5 writes what it's handed.
-2. **M6 orchestrator:** self-contained coroutine keyed on `document_id` that runs
-   parse→chunk→embed→write and drives `documents.status`; assembles the strings M4 embeds (today
-   just each chunk's content — the `embed_text` seam). Then **M7** upload endpoint (202 + doc id).
-3. **Live embed test — already confirmed once (2026-07-06):** `gemini-embedding-2` is a valid ID
-   and v2 accepts the prefixed input with no `task_type`. To re-run: `GEMINI_API_KEY` must be in
-   the **process env** (not just `backend/.env` — `os.getenv` won't read the file), then
-   `pytest -m live`.
+1. **M6 (orchestrator), test-first:** failing test first, then a self-contained coroutine keyed
+   on `document_id`: `get_storage().load()` for bytes → parse (M2, `hi_res`) → chunk (M3) → build
+   the embed strings (the `embed_text` seam — today just each chunk's `content`, wrapped via
+   `as_retrieval_document`) → embed (M4) → `write_chunks` (M5) with the elements + aligned
+   vectors. Drives `documents.status` (`pending`→`processing`→`ready`/`failed`) and **owns the
+   commit** (M5 only flushes). Returns nothing to a caller (job-shaped). Emits structured metrics,
+   never silent (eval-as-substrate). Watch: M6 reads bytes but M2 wants a *path* — the storage
+   seam's future `open_local` (local storage owns the path; S3 spills to a temp file).
+2. **M7 upload endpoint:** persist file (M1 `save`) + insert `documents` row `pending` + kick the
+   job + return **202 + doc id**; client polls `status` until `ready`. Celery swap later is one
+   line (`await orchestrate(id)` → `orchestrate.delay(id)`).
+3. **Live embed test — confirmed once (2026-07-06):** `gemini-embedding-2` is a valid ID and v2
+   accepts the prefixed input with no `task_type`. To re-run: `GEMINI_API_KEY` in the **process
+   env** (not just `backend/.env` — `os.getenv` won't read the file), then `pytest -m live`.
 4. **Naive-first but still test-first** — the red/green net exists before the naive code, so
-   improving it later stays safe. Slow down and teach on the RAG core (write/orchestrate).
+   improving it later stays safe. Slow down and teach on the RAG core (orchestrate).
