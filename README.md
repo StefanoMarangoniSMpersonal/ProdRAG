@@ -26,6 +26,9 @@ walkthrough.
 
 Redis is running via docker-compose but **not yet wired to code** (Celery/async ingestion comes later in Phase 1).
 
+For a layer-by-layer completion breakdown (the 10 architectural layers, each scored code-only vs.
+code + design), see [`docs/PROGRESS.md`](./docs/PROGRESS.md) — the living development tracker.
+
 ---
 
 ## Architecture
@@ -69,6 +72,10 @@ Legend: **wired** = in code today · *planned* = decided, arrives in a later pha
 - Docker + Docker Compose
 - Python 3.12+
 - Node 18+ / npm
+- **For parsing PDFs with OCR/layout (the `hi_res` / `ocr_only` strategies) —** two
+  system binaries on your PATH: **poppler** (renders PDF pages to images) and **tesseract**
+  (the OCR engine). On Windows: `choco install poppler tesseract`. Not needed for text
+  formats (`.md`/`.txt`/`.html`), for digital PDFs via `--strategy fast`, or to run `pytest`.
 
 ## Quick start (one command, Windows/PowerShell)
 
@@ -150,7 +157,7 @@ Schema is managed as **plain numbered SQL** (no ORM migration tool yet):
 backend/    FastAPI app + RAG core (app/models.py = ORM; app/db.py, app/config.py, app/main.py)
 frontend/   Next.js app (App Router)
 infra/      docker-compose.yml; db/init (extension) + db/migrations (schema + runner)
-docs/       handoff notes, decisions
+docs/       HANDOFF.md (session state) · PROGRESS.md (layer-by-layer tracker) · decisions
 eval/        golden set + eval harness            (arrives in Phase 1/2)
 .claude/    Claude Code agents + skills for this repo
 CLAUDE.md   project constitution · rag-system-architecture.md · SETUP.md

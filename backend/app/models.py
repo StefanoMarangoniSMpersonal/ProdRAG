@@ -37,7 +37,9 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid() #not python generating the UUID but PostgreSQL db generates it as soon as the row is inserted
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid() 
+        #not python generating the UUID but PostgreSQL db 
+        #No. generates it as soon as the row is inserted
     )
     owner_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, default=DEV_OWNER_ID

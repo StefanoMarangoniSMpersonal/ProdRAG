@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # lands at backend/storage/ (git-ignored). Swapped for an S3 bucket later.
     storage_dir: str = "storage"
 
+    # PDF/image parse strategy the ingestion pipeline uses (M2). Defaults to "hi_res"
+    # because we always request table-structure inference, which only runs under hi_res
+    # (it needs the poppler + tesseract binaries and runs a layout + table model —
+    # slower, but ingestion is job-shaped so per-doc latency doesn't matter). Override
+    # per-environment via INGEST_PDF_STRATEGY; ignored for text formats.
+    ingest_pdf_strategy: str = "hi_res"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

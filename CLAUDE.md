@@ -53,6 +53,25 @@ architect**. Therefore:
 - **Document processing:** **Unstructured** for parsing/OCR. It partitions every format
   (PDF, DOCX, HTML, PPTX, Markdown, email) into typed elements before chunking, so the
   chunking strategy below is format-agnostic.
+  - **Table structure always inferred:** parse passes `infer_table_structure=True`, so a
+    `Table` element keeps its grid as `metadata.text_as_html` (real `<table>…</table>`,
+    preserving cell↔header links) instead of a flattened text blob. This only takes effect
+    under **`hi_res`**, so the PDF/image parse strategy **defaults to `hi_res`**
+    (`Settings.ingest_pdf_strategy`, env-overridable). hi_res needs the poppler + tesseract
+    binaries and runs a layout + table model — slower, but ingestion is job-shaped so
+    per-doc latency doesn't matter. `text_as_html` is carried through chunk (M3) into the
+    chunk's `metadata` JSONB at write (M5); it never becomes the embedded text directly.
+  - **AI-enhanced summaries for table/image chunks (planned, deferred — gated on eval):**
+    a future **enrich** stage (between chunk M3 and embed M4) will ask the LLM to write a
+    natural-language summary of each `Table`/`Image` chunk and embed *that* summary (a
+    description retrieves far better than raw `<td>` HTML), while the raw stays as the
+    chunk's `content` for display + citation. The seam is the per-chunk **`embed_text`**
+    (defaults to `content`) that M4 embeds; enrich overwrites it for table/image chunks, so
+    adding it never reshapes M4/M5. Built only once the naive pipeline runs end-to-end and
+    the eval harness can A/B summary-vs-raw embedding.
+  - **Image extraction stays v1-deferred** (`extract_image_block_types` /
+    `extract_image_block_to_payload`, hi_res). When enabled later, image chunks ride the
+    exact same enrich path — no new mechanism.
 - **Chunking strategy:** Unstructured **`by_title`** as the universal default across ALL
   formats (it respects section boundaries regardless of source type). Settings:
   - `combine_under_n_chars = 500` — merges fragments when a short line is mis-detected as
@@ -110,6 +129,26 @@ architect**. Therefore:
   enqueue-and-process so adding Celery is a one-line swap (`await orchestrate(id)` →
   `orchestrate.delay(id)`), never a rewrite of the endpoint or the client contract.
 - Keep LangChain thin: use it for integrations, let **LangGraph** own control flow.
+
+## Testing — test-first and test-immutable (hard rule)
+
+Every new module, feature, or block of code is built **test-first**: the test is written and
+committed to *before* the implementation exists. Write the test, watch it fail (red), then write
+the code that makes it pass (green). No production code gets written to satisfy behavior that a
+test doesn't already demand.
+
+**Once a test is written, it is immutable.** If the code doesn't pass, you fix the **code**, never
+the test — editing or loosening a test to make a failing implementation "pass" is forbidden. The
+test is the fixed specification; the code is what bends to meet it.
+
+- The single exception: the *test itself* encodes the wrong spec. That is not a coding decision —
+  it is an architecture/design decision, which is **mine (the human's)**. When you believe a test
+  is wrong, **stop and ask me**; do not silently edit it. Only I authorize a test change, and that
+  change is a deliberate spec revision, not a convenience to get to green.
+- A test that is skipped, `xfail`ed, deleted, or weakened to pass counts as editing it — same
+  prohibition (this compounds the existing "a SKIP is a false green" rule).
+- This applies to the RAG core especially: the naive-first implementations still land test-first,
+  so "improve it together later" always has a red/green safety net.
 
 ## Commands
 

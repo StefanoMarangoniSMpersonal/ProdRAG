@@ -4,3 +4,15 @@ sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 pgvector==0.3.6
 pydantic-settings==2.7.1
+
+# M2 parse. Unstructured partitions every format into typed elements. Extras are
+# per-format: `md` pulls the Markdown dep, `pdf` adds the PDF/OCR stack (torch +
+# unstructured-inference). The PDF OCR/layout path also needs two SYSTEM binaries
+# (installed outside pip): poppler (PDF->image) and tesseract (OCR). See
+# README/SETUP for the Windows install; text formats (.md/.txt/.html) need neither.
+unstructured[md,pdf]==0.23.1
+# NOTE: do NOT add python-magic / python-magic-bin on Windows. python-magic-bin
+# ships a 2014-era libmagic DLL that segfaults on load (access violation) under
+# modern 64-bit Python, taking the whole process down. Without it, Unstructured's
+# detect_filetype falls back to pure-Python detection by file extension, which is
+# exactly what we feed it via `metadata_filename` in parse.py.
