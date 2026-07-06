@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     ingest_chunk_max_characters: int = 1500
     ingest_chunk_combine_text_under_n_chars: int = 500
 
+    # Embedding (M4). We use the Gemini Developer API via the google-genai SDK with
+    # API-key auth (not Vertex) — one key, no GCP project/IAM, matching single-tenant
+    # naive-first. The key is read from GEMINI_API_KEY and defaults to "" so the app
+    # still imports without it; embed_texts raises a clear error only when a real call
+    # is attempted. 768 dims is the locked output size (fits pgvector's HNSW 2000-dim
+    # cap). embedding_batch_size caps texts sent per API request. Override via
+    # GEMINI_API_KEY / EMBEDDING_MODEL / EMBEDDING_DIMENSIONS / EMBEDDING_BATCH_SIZE.
+    gemini_api_key: str = ""
+    embedding_model: str = "gemini-embedding-2"
+    embedding_dimensions: int = 768
+    embedding_batch_size: int = 100
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

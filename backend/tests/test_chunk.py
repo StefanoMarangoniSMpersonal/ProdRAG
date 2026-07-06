@@ -34,8 +34,7 @@ COMBINE_UNDER = 500
 async def test_chunk_by_title_groups_and_caps() -> None:
     # Parse the markdown corpus into elements, then chunk them. by_title should merge
     # the many small elements into fewer, section-shaped chunks -- none over the cap.
-    data = (FIXTURES / "rag_test_document.md").read_bytes()
-    elements = await parse_document(data, "rag_test_document.md")
+    elements = await parse_document(FIXTURES / "rag_test_document.md")
 
     chunks = await chunk_document(
         elements,
@@ -63,8 +62,9 @@ async def test_chunk_pdf_table_keeps_text_as_html() -> None:
     # The M3 requirement: after chunking, the isolated Table chunk must still carry the
     # HTML grid (metadata.text_as_html) that preserves cell<->header links. A chunker
     # that dropped it here would undo everything M2's hi_res table path bought us.
-    data = (FIXTURES / "quarterly_report.pdf").read_bytes()
-    elements = await parse_document(data, "quarterly_report.pdf", strategy="hi_res")
+    elements = await parse_document(
+        FIXTURES / "quarterly_report.pdf", strategy="hi_res"
+    )
 
     chunks = await chunk_document(
         elements,

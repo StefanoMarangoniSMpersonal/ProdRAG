@@ -14,5 +14,10 @@ unstructured[md,pdf]==0.23.1
 # NOTE: do NOT add python-magic / python-magic-bin on Windows. python-magic-bin
 # ships a 2014-era libmagic DLL that segfaults on load (access violation) under
 # modern 64-bit Python, taking the whole process down. Without it, Unstructured's
-# detect_filetype falls back to pure-Python detection by file extension, which is
-# exactly what we feed it via `metadata_filename` in parse.py.
+# detect_filetype falls back to pure-Python detection by file extension — which is
+# exactly what parse.py relies on, since it hands `partition` a real `filename=` path
+# (the path-only M2 contract) and libmagic content-sniffing never enters the picture.
+
+# M4 embed. Gemini Developer API (API-key auth, not Vertex) via the google-genai SDK.
+# Async client (client.aio) so an embed never blocks the event loop.
+google-genai==2.10.0

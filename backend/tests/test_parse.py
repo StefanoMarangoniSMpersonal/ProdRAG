@@ -26,9 +26,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 async def test_parse_markdown_returns_typed_elements() -> None:
-    data = (FIXTURES / "rag_test_document.md").read_bytes()
-
-    elements = await parse_document(data, "rag_test_document.md")
+    elements = await parse_document(FIXTURES / "rag_test_document.md")
 
     # Non-empty, and each element is a real typed element carrying string text.
     assert len(elements) > 0
@@ -49,7 +47,7 @@ async def test_parse_markdown_returns_typed_elements() -> None:
 async def test_parse_rejects_unknown_strategy() -> None:
     # Validated before Unstructured is ever called, so this needs no parsing at all.
     with pytest.raises(ValueError):
-        await parse_document(b"# hi", "x.md", strategy="turbo")
+        await parse_document(FIXTURES / "rag_test_document.md", strategy="turbo")
 
 
 async def test_parse_pdf_hi_res_infers_table_structure() -> None:
@@ -57,9 +55,9 @@ async def test_parse_pdf_hi_res_infers_table_structure() -> None:
     # just flatten the table to text -- it must reconstruct the grid as HTML (metadata
     # .text_as_html). That HTML is what preserves the cell<->header association a flat
     # blob destroys, and it is the whole reason `infer_table_structure` is turned on.
-    data = (FIXTURES / "Proactive Autoscaling.pdf").read_bytes()
-
-    elements = await parse_document(data, "Proactive Autoscaling.pdf", strategy="hi_res")
+    elements = await parse_document(
+        FIXTURES / "Proactive Autoscaling.pdf", strategy="hi_res"
+    )
 
     # The layout model detects the bordered region as a Table element.
     tables = [el for el in elements if el.category == "Table"]

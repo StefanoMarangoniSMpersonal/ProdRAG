@@ -47,10 +47,10 @@ def _preview(text: str, limit: int) -> str:
 async def _run(
     path: Path, strategy: str, preview: int, max_chars: int, combine: int
 ) -> int:
-    data = path.read_bytes()
-    print(f"Parsing {path.name}  ({len(data):,} bytes, strategy={strategy!r})\n")
+    size = path.stat().st_size
+    print(f"Parsing {path.name}  ({size:,} bytes, strategy={strategy!r})\n")
 
-    elements = await parse_document(data, path.name, strategy=strategy)
+    elements = await parse_document(path, strategy=strategy)
 
     # --- per-element view ---------------------------------------------------------
     for i, el in enumerate(elements):

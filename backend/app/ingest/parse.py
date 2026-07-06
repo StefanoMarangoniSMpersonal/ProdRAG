@@ -1,9 +1,18 @@
-"""M2 — parse: raw file bytes -> a list of typed *elements*, via Unstructured.
+"""M2 — parse: a file path -> a list of typed *elements*, via Unstructured.
 
 This is the first stage of the ingestion pipeline and it does exactly one thing:
-hand the raw bytes to Unstructured's `partition`, which detects the format and splits
-the document into **typed elements** — objects like `Title`, `NarrativeText`, `Table`,
-`ListItem`, each carrying its text plus metadata (page number, coordinates, …).
+hand a local file path to Unstructured's `partition`, which detects the format and
+splits the document into **typed elements** — objects like `Title`, `NarrativeText`,
+`Table`, `ListItem`, each carrying its text plus metadata (page number, coordinates, …).
+
+Why a path, not bytes (M2 contract, revised 2026-07-06):
+    The caller (the M6 orchestrator, via the storage seam's `open_local`) always has
+    the file on local disk by the time it parses — local storage owns the path
+    outright; S3 streams the object to a temp file first. Handing `partition` a real
+    `filename=` avoids realizing the whole file into a `bytes` object (and a second
+    `BytesIO` copy) in our process, and it is what the heavy hi_res PDF path actually
+    wants: poppler/pdfminer need random access to a real file, so given a file-like
+    they spill to an internal temp file anyway. A path is both leaner and preferred.
 
 Where the seam is (parse vs. chunk):
     An *element* is Unstructured's structural unit (one heading, one paragraph, one
@@ -42,7 +51,7 @@ loop — the same pattern `LocalDiskStorage` uses for its blocking filesystem ca
 from __future__ import annotations
 
 import asyncio
-from io import BytesIO
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -66,25 +75,37 @@ _MISSING_BINARY_ERRORS = frozenset(
 
 
 async def parse_document(
-    data: bytes, filename: str, *, strategy: str = "auto"
+    source: str | os.PathLike[str], *, strategy: str = "auto"
 ) -> list[Element]:
-    """Partition `data` into typed Unstructured elements.
+    """Partition the file at `source` into typed Unstructured elements.
 
-    `filename` is the human-supplied name; its extension is how Unstructured routes to
-    the right partitioner (.pdf -> PDF, .md -> Markdown, …), so it must carry a real
-    extension even though the bytes — not the name — are what we parse. `strategy`
-    selects the PDF/image reading strategy (see module docstring); it is ignored for
-    text formats. Returns the elements in document order.
+    `source` is a path to the file on local disk. Its extension is how Unstructured
+    routes to the right partitioner (.pdf -> PDF, .md -> Markdown, …), so the path must
+    carry a real extension — which our storage keys do (the key leaf keeps the original
+    extension, e.g. `<uuid>/report.pdf`). Extension-based routing also means we never
+    fall back to libmagic content-sniffing, so the `python-magic` ban on Windows stays
+    irrelevant here. `strategy` selects the PDF/image reading strategy (see module
+    docstring); it is ignored for text formats. Returns the elements in document order.
     """
     if strategy not in _STRATEGIES:
         raise ValueError(
             f"Unknown parse strategy {strategy!r}; "
             f"expected one of {sorted(_STRATEGIES)}."
         )
-    return await asyncio.to_thread(_partition_sync, data, filename, strategy)
+    # Concurrency footgun (documented + deferred -- Option A, 2026-07-06). to_thread
+    # submits to the event loop's SHARED default ThreadPoolExecutor (max_workers =
+    # min(32, cpu+4)). Safe today because ingestion is JOB-SHAPED: M6 runs one document
+    # per job, so this is called at concurrency 1 per worker, and cross-document
+    # concurrency is bounded by the Celery worker pool (--concurrency), NOT here. The
+    # trap to avoid: a caller that fans out in-process -- gather(*[parse_document(p)
+    # ...]) -- would run up to ~12 hi_res parses at once, each releasing the GIL into
+    # native torch/tesseract compute, and thrash or OOM the box. If a batch/in-process
+    # caller ever lands, bound this seam with an asyncio.Semaphore(N) (per-process --
+    # it complements, never replaces, Celery --concurrency).
+    return await asyncio.to_thread(_partition_sync, source, strategy)
 
 
-def _partition_sync(data: bytes, filename: str, strategy: str) -> list[Element]:
+def _partition_sync(source: str | os.PathLike[str], strategy: str) -> list[Element]:
     """The blocking Unstructured call, plus friendlier errors for the two failure
     modes the PDF path hits on a fresh machine (missing optional dep / missing system
     binary). Runs inside a worker thread via `asyncio.to_thread`."""
@@ -93,11 +114,10 @@ def _partition_sync(data: bytes, filename: str, strategy: str) -> list[Element]:
     from unstructured.partition.auto import partition
 
     try:
-        # Pass the bytes as a file object; `metadata_filename` gives Unstructured the
-        # extension it needs to pick a partitioner without touching real disk.
+        # Pass the real path; Unstructured reads it directly and uses the extension to
+        # pick a partitioner. os.fspath turns a Path into the str `partition` expects.
         return partition(
-            file=BytesIO(data),
-            metadata_filename=filename,
+            filename=os.fspath(source),
             strategy=strategy,
             # Always request table-structure inference (locked decision). Under hi_res
             # this runs Unstructured's table-transformer model so a detected table keeps
@@ -110,16 +130,16 @@ def _partition_sync(data: bytes, filename: str, strategy: str) -> list[Element]:
     except ImportError as exc:
         # e.g. hi_res needs `unstructured-inference`, which ships with the [pdf] extra.
         raise RuntimeError(
-            f"Parsing {filename!r} (strategy={strategy!r}) needs an optional "
+            f"Parsing {os.fspath(source)!r} (strategy={strategy!r}) needs an optional "
             "Unstructured dependency that isn't installed — for PDFs, install "
             f"'unstructured[pdf]'. Original error: {exc}"
         ) from exc
     except Exception as exc:
         if type(exc).__name__ in _MISSING_BINARY_ERRORS:
             raise RuntimeError(
-                f"Parsing {filename!r} (strategy={strategy!r}) needs the poppler "
-                "and/or tesseract system binaries, which aren't on PATH. Install them "
-                "(Windows: `choco install poppler tesseract`), or use strategy='fast' "
-                f"for a digital PDF. Original error: {exc}"
+                f"Parsing {os.fspath(source)!r} (strategy={strategy!r}) needs the "
+                "poppler and/or tesseract system binaries, which aren't on PATH. "
+                "Install them (Windows: `choco install poppler tesseract`), or use "
+                f"strategy='fast' for a digital PDF. Original error: {exc}"
             ) from exc
         raise
