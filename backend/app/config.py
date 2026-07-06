@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     # per-environment via INGEST_PDF_STRATEGY; ignored for text formats.
     ingest_pdf_strategy: str = "hi_res"
 
+    # Chunking knobs the ingestion pipeline uses (M3, Unstructured `by_title`). The M6
+    # orchestrator reads these and passes them to chunk_document (the same way it reads
+    # ingest_pdf_strategy for parse). `max_characters` is the hard cap per chunk — kept
+    # well under the ~8,192-token embedding input limit and tunable via /ingest-inspect;
+    # `combine_text_under_n_chars` merges runt sections mis-detected as Titles. Override
+    # per-environment via INGEST_CHUNK_MAX_CHARACTERS /
+    # INGEST_CHUNK_COMBINE_TEXT_UNDER_N_CHARS.
+    ingest_chunk_max_characters: int = 1500
+    ingest_chunk_combine_text_under_n_chars: int = 500
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
