@@ -51,11 +51,15 @@ Batching + async:
     later without changing any caller. We use the SDK's async client (`client.aio`) so
     an embed never blocks the event loop — the same discipline as parse/chunk.
 
-SDK surface (google-genai, verified against 2.10.0 at build time):
-    `client.aio.models.embed_content(model=, contents=[str, ...], config=)` where
-    `config = types.EmbedContentConfig(output_dimensionality=)` — no `task_type` for v2;
-    the response carries `.embeddings`, a list of objects each exposing `.values` (the
-    float vector). The opt-in live test (`pytest -m live`) revalidates this for real.
+SDK surface (google-genai, verified against 2.10.0 — batch shape re-verified live
+2026-07-07):
+    `client.aio.models.embed_content(model=, contents=[Content, ...], config=)` where
+    `config = types.EmbedContentConfig(output_dimensionality=)` — no `task_type` for v2.
+    CRUCIAL: to embed N texts in one call, pass N *Content* objects (one text each),
+    NOT a `list[str]` — the SDK reads a bare string list as the many Parts of ONE
+    Content and returns a SINGLE fused vector. The response carries `.embeddings`,
+    aligned with `contents`, each exposing `.values` (the float vector). The opt-in
+    live tests (`pytest -m live`) revalidate this against the real API.
 """
 
 from __future__ import annotations
@@ -147,9 +151,12 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
+        # Each text must be its OWN Content, or v2 folds a raw list[str] into a single
+        # multi-part input and returns ONE vector for the whole batch (verified against
+        # the real API 2026-07-07). One Content per input == one vector per input.
         response = await client.aio.models.embed_content(
             model=settings.embedding_model,
-            contents=batch,
+            contents=[types.Content(parts=[types.Part(text=t)]) for t in batch],
             config=types.EmbedContentConfig(
                 output_dimensionality=settings.embedding_dimensions,
             ),

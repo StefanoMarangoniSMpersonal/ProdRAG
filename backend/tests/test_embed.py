@@ -39,6 +39,18 @@ from app.ingest.embed import as_retrieval_document, as_retrieval_query, embed_te
 DIMS = 768
 
 
+def _sent_texts(contents: list) -> list[str]:
+    """Pull the plain strings back out of what embed_texts handed the SDK.
+
+    v2 batch contract (proven against the real API, 2026-07-07): a `list[str]` is read
+    as ONE multi-part Content and collapses to a SINGLE vector, so embed_texts wraps
+    each input as its own `Content(parts=[Part(text=...)])` — one Content per input is
+    what makes the API return one vector per input. This helper unwraps that shape so
+    the assertions below can talk about the original strings.
+    """
+    return [part.text for content in contents for part in content.parts]
+
+
 class _FakeModels:
     """Stand-in for `client.aio.models` — records calls, returns fake embeddings."""
 
@@ -110,7 +122,10 @@ async def test_embed_passes_dimensionality_and_omits_task_type(
     assert call["config"].output_dimensionality == DIMS
     assert getattr(call["config"], "task_type", None) is None
     assert call["model"] == "fake-embedding-model"
-    assert call["contents"] == ["x"]
+    # The input reaches the SDK as one Content per string (not a raw list[str], which v2
+    # would fold into a single multi-part input and one vector); unwrapped, it's the
+    # exact string handed in.
+    assert _sent_texts(call["contents"]) == ["x"]
 
 
 def test_retrieval_prefixes_match_gemini_embedding_2_format() -> None:
@@ -130,9 +145,10 @@ async def test_embed_batches_and_preserves_order(fake_client: _FakeClient) -> No
     calls = fake_client.aio.models.calls
     assert len(calls) == 3
     assert [len(c["contents"]) for c in calls] == [4, 4, 2]
-    # Flattening the per-batch contents reconstructs the input in order: nothing
-    # dropped, reordered, or duplicated across the batch boundaries.
-    flattened = [t for c in calls for t in c["contents"]]
+    # Flattening the per-batch contents (unwrapped from their per-input Content) recon-
+    # structs the input in order: nothing dropped, reordered, or duplicated across the
+    # batch boundaries.
+    flattened = [t for c in calls for t in _sent_texts(c["contents"])]
     assert flattened == texts
     assert len(vectors) == len(texts)
 
@@ -150,7 +166,7 @@ async def test_embed_live_real_gemini() -> None:
     # live"); run with `pytest -m live` and GEMINI_API_KEY set. It validates what a
     # mock can't — the real model ID, dims, and that v2 ACCEPTS the prefixed input.
     # ERRORs, never skips, on failure.
-    #assert os.getenv("GEMINI_API_KEY"), "GEMINI_API_KEY must be set for the live test"
+    assert os.getenv("GEMINI_API_KEY"), "GEMINI_API_KEY must be set for the live test"
 
     vectors = await embed_texts(
         [as_retrieval_document("What is retrieval-augmented generation?")]

@@ -26,6 +26,7 @@ the daemon is down — the "a SKIP is a false green" stance the other DB tests t
 
 from __future__ import annotations
 
+import math
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -189,3 +190,72 @@ async def test_orchestrate_raises_on_missing_document(wired: SimpleNamespace) ->
     # A document_id with no row is a lost-row / caller bug: fail loudly, write nothing.
     with pytest.raises(LookupError):
         await orch.orchestrate(uuid.uuid4())
+
+
+@pytest.fixture
+def wired_live(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    """Same wiring as `wired`, but leaves `embed_texts` REAL — the orchestrator calls
+    the actual Gemini API. Only the embed stage reaches the network; storage and the
+    committing DB factory are still test doubles. Opt-in (the test below is `-m live`).
+    """
+    storage = LocalDiskStorage(root=tmp_path)
+    monkeypatch.setattr(orch, "SessionLocal", session_factory)
+    monkeypatch.setattr(orch, "get_storage", lambda: storage)
+    return SimpleNamespace(storage=storage, factory=session_factory)
+
+
+@pytest.mark.live
+async def test_orchestrate_ingests_document_end_to_end_live(
+    wired_live: SimpleNamespace,
+) -> None:
+    # The real end-to-end: parse (M2) + chunk (M3) + the ACTUAL Gemini embedding call
+    # (M4) + Postgres write (M5), the one thing the faked-embed happy-path test can't
+    # prove. Opt-in: deselected by default (pytest.ini `-m "not live"`); run with
+    # `pytest -m live` FROM backend/ (so .env's GEMINI_API_KEY loads) and Docker up.
+    # ERRORs, never skips — a live run that can't reach Gemini is a failure, not a pass.
+    doc_id, uri = await _seed_pending_document(
+        wired_live.factory,
+        wired_live.storage,
+        data=FIXTURE.read_bytes(),
+        filename="rag_test_document.md",
+    )
+
+    result = await orch.orchestrate(doc_id)
+
+    # A clean ready run — surface the real error message if Gemini rejected the call.
+    assert result.status == "ready", result.error
+    assert result.chunk_count > 0
+    assert result.error is None
+
+    async with wired_live.factory() as session:
+        doc = await session.get(Document, doc_id)
+        assert doc is not None
+        assert doc.status == "ready"
+        rows = (
+            (
+                await session.execute(
+                    select(Chunk)
+                    .where(Chunk.document_id == doc_id)
+                    .order_by(Chunk.ordinal)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == result.chunk_count
+    assert [r.ordinal for r in rows] == list(range(len(rows)))
+    # Real Gemini vectors: 768-dim and L2-normalized (unit length), which the fake can't
+    # vouch for since it never runs the model's own normalization.
+    for r in rows:
+        v = list(r.embedding)
+        assert len(v) == DIMS
+        assert math.isclose(math.sqrt(sum(x * x for x in v)), 1.0, rel_tol=1e-3)
+    # Distinct chunks embed to distinct vectors — a constant/degenerate stand-in would
+    # collapse them all to one point; real semantic embeddings do not.
+    if len(rows) > 1:
+        assert len({tuple(r.embedding) for r in rows}) > 1
