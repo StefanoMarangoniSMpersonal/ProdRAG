@@ -78,3 +78,40 @@ async def test_delete_is_idempotent_and_removes_file(tmp_path: Path) -> None:
     await storage.delete(uri)
     # The uuid dir was pruned, so nothing is left under the root.
     assert not any(tmp_path.iterdir())
+
+
+# --- open_local: hand M2 a real filesystem path (used by the M6 orchestrator) --------
+
+
+async def test_open_local_yields_a_real_readable_path(tmp_path: Path) -> None:
+    # M2 parse wants a PATH, not bytes. `open_local` is the seam M6 uses: for local disk
+    # it yields the blob's actual on-disk path (zero copy). The bytes at that path must
+    # be exactly what was saved, and the file must still exist inside the context.
+    storage = LocalDiskStorage(root=tmp_path)
+    data = b"# heading\n\nbody text"
+    uri = await storage.save(data, "doc.md")
+
+    async with storage.open_local(uri) as path:
+        assert isinstance(path, Path)
+        assert path.is_file()
+        assert path.read_bytes() == data
+        # The extension is preserved so the parser can route by format.
+        assert path.suffix == ".md"
+        # It's the real stored file under the root, not a temp copy (local backend).
+        assert path.is_relative_to(tmp_path)
+
+
+async def test_open_local_rejects_foreign_scheme(tmp_path: Path) -> None:
+    storage = LocalDiskStorage(root=tmp_path)
+    with pytest.raises(ValueError):
+        async with storage.open_local("s3://bucket/key"):
+            pass
+
+
+async def test_open_local_rejects_path_traversal(tmp_path: Path) -> None:
+    storage = LocalDiskStorage(root=tmp_path)
+    secret = tmp_path.parent / "secret.txt"
+    secret.write_bytes(b"top secret")
+    with pytest.raises(ValueError):
+        async with storage.open_local("file://../secret.txt"):
+            pass

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -60,6 +62,17 @@ class LocalDiskStorage:
     async def delete(self, uri: str) -> None:
         path = self._resolve(uri)
         await asyncio.to_thread(self._remove, path)
+
+    @asynccontextmanager
+    async def open_local(self, uri: str) -> AsyncIterator[Path]:
+        # Local disk already holds the blob at a real path, so this is zero-copy:
+        # resolve the URI (which also runs the foreign-scheme + traversal guard, raising
+        # before we yield) and hand back the on-disk path. There's nothing to spill or
+        # clean up on exit — the file lives here until `delete`. A future S3Storage
+        # would instead download to a NamedTemporaryFile inside a `try`/`finally` and
+        # unlink it after the `yield`; callers never see the difference.
+        path = self._resolve(uri)
+        yield path
 
     # --- sync helpers (run inside asyncio.to_thread) ------------------------------
 

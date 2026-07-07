@@ -21,6 +21,8 @@ absolute path — S3 slots in later as a new scheme with no schema migration.
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
@@ -50,4 +52,18 @@ class Storage(Protocol):
         """Remove the blob at `uri`. Idempotent: deleting an already-absent blob is a
         no-op, not an error (matches S3 delete semantics, so failure-path cleanup in the
         orchestrator can call it blindly). Still raises on a foreign/traversing URI."""
+        ...
+
+    def open_local(self, uri: str) -> AbstractAsyncContextManager[Path]:
+        """Yield a real local filesystem `Path` for `uri`, for the whole `async with`.
+
+        The parse stage (M2) needs an actual file on disk (poppler/pdfminer read a path,
+        and the extension routes the partitioner) — never bytes in memory. `open_local`
+        is the seam that gives the orchestrator (M6) that path *without* it ever loading
+        the blob into RAM: the local backend yields the blob's own on-disk path (zero
+        copy, nothing to clean up); a future S3 backend would stream the object to a
+        temp file, yield that, and delete it on exit. Callers stay backend-agnostic.
+
+        Raises (before yielding) on a foreign/traversing URI, exactly like `load`.
+        """
         ...

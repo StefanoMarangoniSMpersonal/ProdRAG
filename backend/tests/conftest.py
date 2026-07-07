@@ -41,7 +41,12 @@ from pathlib import Path
 
 import asyncpg
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from testcontainers.postgres import PostgresContainer
 
 # repo-root/infra/db/migrations/002_schema.sql — conftest.py is at backend/tests/, so
@@ -95,4 +100,30 @@ async def db_session(_pg_url: str) -> AsyncGenerator[AsyncSession, None]:
         await session.close()
         await txn.rollback()
         await conn.close()
+        await engine.dispose()
+
+
+@pytest.fixture
+async def session_factory(
+    _pg_url: str,
+) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
+    """A committing session factory bound to the test container — for the M6 test.
+
+    `db_session` above isolates tests by wrapping everything in ONE outer transaction
+    it rolls back, which works only because M1–M5 never commit. But M6 *owns the commit*
+    (it walks `documents.status` through several short transactions), so its test must
+    let real commits land and then observe them from a *separate* session/connection —
+    exactly what a future Celery worker and an HTTP poller would do. This fixture hands
+    back an `async_sessionmaker` (so both the test and the orchestrator-under-test can
+    each open their own committing session on the same engine), and restores isolation
+    the only way that survives a commit: TRUNCATE both tables at teardown.
+    """
+    engine = create_async_engine(_pg_url)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        yield factory
+    finally:
+        # CASCADE + both tables so a committed run leaves nothing for the next test.
+        async with engine.begin() as conn:
+            await conn.execute(text("TRUNCATE chunks, documents CASCADE"))
         await engine.dispose()
