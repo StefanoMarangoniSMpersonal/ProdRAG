@@ -2,8 +2,8 @@
 
 _Last updated: 2026-07-10. **Phase 1's ingestion PATH is complete** — a file now travels
 from an HTTP upload all the way to retrievable chunks (M0–M7). Suite = **30 pass + 2
-deselected (live)**. M0–M7 are committed & pushed; only the M7 + DB-GUI working-tree delta
-awaits a commit (see Git state)._
+deselected (live)**. **M0–M7 are all committed & pushed** (`main` in sync with
+`origin/main`); two small tooling files stay uncommitted by choice (see Git state)._
 
 _This file keeps only **what's live + what's next**. Settled detail lives in the code,
 `docs/PROGRESS.md` (layer-by-layer % tracker), and auto-memory (`phase1-ingestion.md`,
@@ -91,15 +91,14 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
 ## Git state
 
 - Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **`main` is in
-  sync with `origin/main`** — M0–M6 (incl. the M4 batch fix) all committed & pushed. Recent:
-  `fa8f3ff` (M3) → `1a52ade` (M4) → `d9f4fd6` (M5) → `aeaacfc` (M6) → `232564a` (M4 batch
-  fix). No `Co-Authored-By` trailer (user preference).
-- **UNCOMMITTED (M7 + DB-GUI tooling — one commit awaiting):** `app/api/__init__.py`,
-  `app/api/documents.py`, `app/main.py` (router wiring), `tests/test_upload.py`,
-  `backend/requirements.txt` (`python-multipart`), `backend/pyproject.toml` (`fastapi.File`
-  in the ruff B008 whitelist), **`infra/db/explore.sql`** (new, tracked), + the
-  HANDOFF/PROGRESS refreshes. **Git-ignored, will NOT commit:** `.vscode/settings.json`
-  (SQLTools connection).
+  sync with `origin/main`** — M0–M7 all committed & pushed. Recent: `1a52ade` (M4) →
+  `d9f4fd6` (M5) → `aeaacfc` (M6) → `232564a` (M4 batch fix) → **`e78ea6b` (M7 upload
+  endpoint, pushed 2026-07-10)**. No `Co-Authored-By` trailer (user preference).
+- **UNCOMMITTED (left out of the M7 commit by choice — a later/separate commit):**
+  `backend/pyproject.toml` (`fastapi.File` in the ruff B008 whitelist) and
+  **`infra/db/explore.sql`** (new, untracked — DB browsing queries). ⚠ Until `pyproject.toml`
+  lands, `ruff check backend` flags B008 on `documents.py`'s `File(...)` default.
+  **Git-ignored, will NOT commit:** `.vscode/settings.json` (SQLTools connection).
 - Also untracked on purpose: `backend/tests/fixtures/Proactive Autoscaling.pdf` (a personal
   corpus doc no test references).
 - **Credentials:** none in the repo. A PAT used for an earlier push was exposed in chat —

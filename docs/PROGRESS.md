@@ -106,12 +106,13 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **All of M0–M7 is committed & pushed** (`main` in sync with `origin/main`). The M4 batch fix
-  (`232564a`) and M6 (`aeaacfc`) that HANDOFF once listed as uncommitted have since landed. The
-  M7 work — `app/api/documents.py`, the `app/api` package, `test_upload.py`, the `main.py` wiring,
-  `python-multipart` in `requirements.txt`, the `fastapi.File` ruff exemption — plus the DB-GUI
-  tooling (`infra/db/explore.sql`, tracked) and these doc refreshes is the current working-tree
-  delta awaiting its own commit. (`.vscode/settings.json`, holding the SQLTools connection, is
+- **All of M0–M7 is committed & pushed** (`main` in sync with `origin/main`). The M7 commit
+  `e78ea6b` (pushed 2026-07-10) carries `app/api/documents.py`, the `app/api` package,
+  `test_upload.py`, the `main.py` wiring, `python-multipart` in `requirements.txt`, and the
+  HANDOFF/PROGRESS refreshes. **Deliberately held back** (a later/separate commit):
+  `backend/pyproject.toml` (the `fastapi.File` ruff exemption) and `infra/db/explore.sql` (the
+  DB browsing queries) — so `ruff check backend` flags B008 on `documents.py`'s `File(...)`
+  default until `pyproject.toml` lands. (`.vscode/settings.json`, the SQLTools connection, is
   git-ignored and won't be committed.)
 
 ## Changelog
