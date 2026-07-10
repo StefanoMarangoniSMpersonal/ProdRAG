@@ -1,5 +1,9 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+# M7 upload endpoint. FastAPI parses multipart/form-data file uploads (UploadFile) via
+# python-multipart; it is NOT pulled in by the bare `fastapi` install (only by the
+# `[standard]` extra), so it is pinned explicitly here.
+python-multipart==0.0.20
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 pgvector==0.3.6

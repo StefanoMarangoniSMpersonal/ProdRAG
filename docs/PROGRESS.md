@@ -4,12 +4,12 @@
 > changelog as milestones land — don't re-derive from scratch each time.
 > Companion to `docs/HANDOFF.md` (session state) and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-07 — M6 (orchestrator) landed: `orchestrate(document_id)` runs the
-> whole pipeline end to end (open_local → parse → chunk → embed → write), drives
-> `documents.status`, owns the commit via a three-transaction lifecycle. First code that
-> persists retrievable chunks end to end. A live end-to-end run against real Gemini then
-> exposed & fixed an M4 batch bug (v2 folds `list[str]` into one fused vector — must pass
-> one `Content` per input). Suite = 26 pass + 2 deselected (live)._
+> _Last updated: 2026-07-10 — M7 (upload endpoint) landed, completing Phase 1's ingestion
+> path: `POST /documents` stores the blob, inserts a `pending` row (filling
+> `byte_size`/`checksum`/`content_type`), kicks `orchestrate` via FastAPI `BackgroundTasks`,
+> and returns 202 + doc id; `GET /documents/{id}` is the status poll. The `BackgroundTasks`
+> kick is the one-line Celery seam (`.add_task(orchestrate, id)` → `orchestrate_task.delay`).
+> Suite = 30 pass + 2 deselected (live). Everything M0–M7 is committed & pushed._
 
 ## How to read the scores
 
@@ -28,9 +28,9 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | # | Layer | Owns | Code-only | **Code + design** |
 |---|-------|------|-----------|-------------------|
 | 1 | Presentation (Frontend) | Next.js chat/upload UI, streaming, auth session | ~5% | **~10%** |
-| 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~15% | **~25%** |
+| 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~5% | **~25%** |
-| 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~85% | **~90%** |
+| 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
 | 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~0% | **~15%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~55% | **~70%** |
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
@@ -38,16 +38,18 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
 
-**Weighted overall: ~17–19% (code-only) · ~34% (code + design).**
+**Weighted overall: ~19–21% (code-only) · ~36% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
 1. **Presentation** — only a `/health/db` JSON page exists; builds clean. Stack fixed, but no
    UI beyond the health probe. Chat + upload UI are Phase 2 / late Phase 1.
-2. **API** — Phase 0 spine: CORS, async DB session, `GET /health` + `GET /health/db`. The RAG
-   endpoints (upload=M7, ask, list) aren't coded; the 202-and-poll upload contract is fully
-   specified, and the job it kicks (`orchestrate`) now exists — M7 is just the HTTP shell +
-   `pending`-row insert on top of it.
+2. **API** — Phase 0 spine (CORS, async DB session, `GET /health` + `/health/db`) plus the
+   **M7 ingestion surface**: `POST /documents` (202-and-poll upload) + `GET /documents/{id}`
+   (status poll), on an `app/api/documents.py` router. The upload contract is now *code*, not
+   just spec — it stores the blob, inserts the `pending` row, and kicks `orchestrate` via
+   `BackgroundTasks` (the one-line Celery seam). Still to build: `ask`, `list`, streaming
+   (Phase 2).
 3. **Async / queue** — Redis container runs but is unwired. No Celery yet. Ingestion is
    *job-shaped* by design so the Celery swap is one line (`await orchestrate(id)` →
    `orchestrate.delay(id)`) — and `orchestrate` now exists in that exact shape (takes only a
@@ -89,7 +91,7 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
 | M5 | Write (elements → `Chunk` ORM rows + vectors; set `element_type`, store `text_as_html` in `metadata` JSONB) | ✅ complete & verified — `write_chunks` flushes (no commit; M6 owns the txn); mining + pgvector/JSONB round-trip under a real-Postgres testcontainers test |
 | M-enrich | LLM summary for `Table`/`Image` chunks → fills `embed_text` (runs between M3 and M4) | ⬜ deferred — gated on eval; needs a generation LLM client |
 | M6 | Orchestrator (self-contained coroutine keyed on `document_id`; three-txn lifecycle, owns the commit, `open_local` path seam, `IngestResult` + structured metrics) | ✅ complete & verified — real parse+chunk+write end-to-end + failure/atomic-rollback + missing-doc, under a committing real-Postgres test |
-| M7 | Upload endpoint (persist + `pending` row + kick job + 202 + doc id) | ⬜ next |
+| M7 | Upload endpoint (persist + `pending` row + kick job + 202 + doc id) | ✅ complete & verified — `POST /documents` + `GET /documents/{id}` on `app/api/documents.py`; empty upload → 400 before any write; job kicked via FastAPI `BackgroundTasks` (Celery seam); 4 immutable tests drive the ASGI app (httpx `ASGITransport`) over the real-Postgres container with `orchestrate` faked |
 
 ## Open loose ends (inside "done" work)
 
@@ -104,16 +106,49 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **M4 + M5 committed but UNPUSHED; M6 + the M4 batch fix uncommitted** — M2+M3 are committed &
-  pushed; M4 (`1a52ade`) and M5 (`d9f4fd6`) are committed locally awaiting `git push`; the working
-  tree holds the M6 work (`orchestrate.py`, `open_local`, the committing `session_factory` fixture,
-  `test_orchestrate.py`, the `open_local` + `models.py` edits) **plus the 2026-07-07 M4 batch-
-  contract fix** (`embed.py` one-`Content`-per-input, the `test_embed.py` mock revision, the new
-  `@pytest.mark.live` end-to-end test) + these doc refreshes — none committed yet. See HANDOFF
-  "Git state".
+- **All of M0–M7 is committed & pushed** (`main` in sync with `origin/main`). The M4 batch fix
+  (`232564a`) and M6 (`aeaacfc`) that HANDOFF once listed as uncommitted have since landed. The
+  M7 work — `app/api/documents.py`, the `app/api` package, `test_upload.py`, the `main.py` wiring,
+  `python-multipart` in `requirements.txt`, the `fastapi.File` ruff exemption — plus the DB-GUI
+  tooling (`infra/db/explore.sql`, tracked) and these doc refreshes is the current working-tree
+  delta awaiting its own commit. (`.vscode/settings.json`, holding the SQLTools connection, is
+  git-ignored and won't be committed.)
 
 ## Changelog
 
+- **2026-07-10 (verification + tooling)** — M7 proven live + DB inspection set up. Ran the opt-in
+  `test_orchestrate_..._live` against **real Gemini** through the whole pipeline on the Aurelia
+  fixture: 16 chunks written, doc `ready`, timings ≈ parse 4.5 s / embed 3.6 s / write 26 ms /
+  total 8.2 s — the M4 one-`Content`-per-input batch fix holds against the live API (16 distinct
+  768-dim unit vectors). Clarified the two-DB reality: the suite's **testcontainers** Postgres is
+  `TRUNCATE`d + destroyed per run (ephemeral), while the persistent **dev DB** (`prodrag-postgres`,
+  volume `infra_pgdata`, `localhost:5432`) currently holds an earlier ingest of the same fixture
+  (1 `documents` row `ready` + 16 `chunks`). Added a **DB GUI**: VS Code **SQLTools** + PostgreSQL
+  driver extensions, a connection in git-ignored `.vscode/settings.json` (localhost:5432,
+  prodrag/prodrag/prodrag), and a new tracked **`infra/db/explore.sql`** — 6 read-only browsing
+  queries (documents/chunks overview, table `text_as_html`, embedding peek, chunk↔document join),
+  all validated against the dev DB. No app-code change — verification + dev tooling only.
+- **2026-07-10** — **M7 (upload endpoint) complete — Phase 1's ingestion path is now wired
+  end to end from an HTTP request.** New `app/api/documents.py` router (mounted in `main.py`):
+  `POST /documents` reads the upload, rejects an empty file with `400` *before* any write,
+  saves the blob (M1), inserts a `documents` row `pending` filling `byte_size`/`checksum`
+  (sha256)/`content_type` — the columns M6 left to the row's creator — commits so the row is
+  durable, then kicks `orchestrate(doc.id)` via FastAPI **`BackgroundTasks`** and returns
+  **202 + doc id**. `GET /documents/{id}` is the status poll (`404` if unknown). The
+  `BackgroundTasks` kick is the deliberate Celery seam — `.add_task(orchestrate, id)` →
+  `orchestrate_task.delay(id)` is the only change when the worker lands, endpoint + client
+  contract unchanged. Architect chose `BackgroundTasks` over inline `await` (would block the
+  202 on a tens-of-seconds hi_res parse) and over `asyncio.create_task` (fire-and-forget,
+  droppable on shutdown). **Test = 4 immutable** (`test_upload.py`): drives the ASGI app with
+  `httpx.AsyncClient` + `ASGITransport` (which runs background tasks as part of the request,
+  so the faked `orchestrate` is provably called by the time POST returns) over the real
+  testcontainers Postgres via the committing `session_factory` + a `get_session` dependency
+  override; `orchestrate` and `get_storage` are faked (no pipeline, no Gemini). Cases:
+  happy-path 202 + full row + blob + job kicked; empty upload → 400, no row, no job; poll
+  known → 200 + status; poll unknown → 404. New dep `python-multipart==0.0.20` (FastAPI needs
+  it for `UploadFile`; not pulled by the bare `fastapi` install) and `fastapi.File` added to
+  the ruff B008 immutable-calls whitelist (same FastAPI DI idiom as `Depends`). Suite now
+  **30 passed, 2 deselected (live), 0 skipped** (was 26+2); all touched files ruff+black clean.
 - **2026-07-07** — M4 embed **batch-contract fix** (found by running M6 end-to-end against
   *real* Gemini). A new `@pytest.mark.live` `test_orchestrate_ingests_document_end_to_end_live`
   ran the whole pipeline with the real embedding call and failed at the write stage: 16 chunks

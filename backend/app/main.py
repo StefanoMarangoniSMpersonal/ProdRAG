@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.documents import router as documents_router
 from app.config import get_settings
 from app.db import get_session
 
@@ -29,6 +30,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Ingestion HTTP surface (M7): POST /documents (upload) + GET /documents/{id} (poll).
+app.include_router(documents_router)
 
 
 @app.get("/health")
