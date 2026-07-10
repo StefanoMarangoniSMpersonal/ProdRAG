@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS documents (
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
+-- attempt: the fencing token for the async (Celery) ingestion job. Bumped once per
+-- claim (pending -> processing); the results/failure commits are gated on it
+-- (UPDATE ... WHERE attempt = :claimed) so a stuck-job reaper can safely requeue a
+-- presumed-dead worker without the superseded one corrupting the winner's write. Also
+-- the poison-pill counter: the reaper gives up (-> failed) past a max-attempts cap.
+-- Added via ALTER (not in the CREATE above) so re-running 002 upgrades an existing dev
+-- DB in place — the file's "idempotent, safe to re-run" contract.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
+
 -- chunks: retrieval-sized pieces of a document, each with its 768-dim embedding.
 CREATE TABLE IF NOT EXISTS chunks (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,     -- internal, high-volume: bigint for insert locality

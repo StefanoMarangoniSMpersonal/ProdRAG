@@ -8,29 +8,27 @@ in `orchestrate`; M7 only has to:
   2. Insert a `documents` row as `pending`, filling the columns M6 deliberately left to
      the row's creator — `byte_size` / `checksum` / `content_type` — because M6 is
      path-only and never realizes the file into memory.
-  3. Kick the ingestion job and return **202 Accepted + the doc id**, WITHOUT waiting
+  3. Enqueue the ingestion job and return **202 Accepted + the doc id**, WITHOUT waiting
      for it. The client then polls `GET /documents/{id}` until `status` is ready/failed.
 
 Why 202-and-poll instead of running the pipeline inline and returning the result:
     A hi_res parse + embed can take tens of seconds; holding the HTTP connection open
     that long invites proxy timeouts and pins a worker/connection for the whole job. 202
-    ("accepted, work started, check back") is the standard shape for deferred work — and
-    it's the SAME shape a Celery worker will have, so the future swap is one line
-    (`background_tasks.add_task(orchestrate, id)` -> `orchestrate_task.delay(id)`) with
-    no change to this endpoint or the client. The 202 is NOT a claim that ingestion
-    succeeded; the real outcome lands in `documents.status`, read via the poll.
+    ("accepted, work started, check back") is the standard shape for deferred work. The
+    202 is NOT a claim that ingestion succeeded; the real outcome lands in
+    `documents.status`, read via the poll.
 
-Why `BackgroundTasks` (not `asyncio.create_task` or an inline `await`):
-    FastAPI runs a background task AFTER the response is flushed, tied to the request
-    lifecycle — so the 202 returns promptly while `orchestrate` runs on the same event
-    loop. `create_task` would be fire-and-forget (droppable on shutdown, no lifecycle
-    hook); an inline `await` would block the response on the whole pipeline (the thing
-    we are explicitly avoiding).
+Why Celery `.delay` (the enqueue):
+    `orchestrate_task.delay(str(doc.id))` serializes the id onto Redis and returns at
+    once; a separate worker process pulls it and runs `orchestrate`. The handler never
+    touches the pipeline, so the 202 is bounded by a blob write + one row insert. (This
+    replaced an interim FastAPI `BackgroundTasks` kick; the job was job-shaped, so
+    the swap was one line, with no change to the endpoint's contract or the poll.)
 
-Why `orchestrate` and `get_storage` are module-level names:
+Why `orchestrate_task` and `get_storage` are module-level names:
     Imported here as globals so a test can monkeypatch THIS module's copy (swap
-    `orchestrate` for a recorder, point storage at a tmp dir) — the same seam M4/M6
-    tests use. `background_tasks.add_task(orchestrate, ...)` and `get_storage()` both
+    `orchestrate_task.delay` for a recorder, point storage at a tmp dir) — the same seam
+    the M4/M6/upload tests use. `orchestrate_task.delay(...)` and `get_storage()` both
     read the name at call time, so the patched version is what runs.
 """
 
@@ -41,7 +39,6 @@ import uuid
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -52,9 +49,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.ingest.orchestrate import orchestrate
 from app.models import Document
 from app.storage import get_storage
+from app.worker import orchestrate_task
 
 router = APIRouter(tags=["documents"])
 
@@ -83,7 +80,6 @@ class DocumentStatusResponse(BaseModel):
     response_model=DocumentCreatedResponse,
 )
 async def upload_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ) -> DocumentCreatedResponse:
@@ -121,9 +117,10 @@ async def upload_document(
     # in its own session, so a not-yet-committed row would be a lost-row LookupError.
     await session.commit()
 
-    # Kick the pipeline after the 202 is sent. Celery-swap seam: replace this one line
-    # with `orchestrate_task.delay(doc.id)` and nothing else changes.
-    background_tasks.add_task(orchestrate, doc.id)
+    # Enqueue the job onto Redis; a worker process runs it. The id is serialized as a
+    # string (JSON broker) and re-parsed to a UUID in the task. The endpoint returns
+    # without waiting — the outcome lands in documents.status, read via the poll.
+    orchestrate_task.delay(str(doc.id))
 
     return DocumentCreatedResponse(id=doc.id, status=doc.status)
 

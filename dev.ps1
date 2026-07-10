@@ -7,6 +7,7 @@
 
     Infra (docker):   Postgres + pgvector, Redis   -> runs in the background
     Backend:          FastAPI (uvicorn --reload)   -> opens its own window
+    Worker:           Celery + Beat (reaper)       -> opens its own window
     Frontend:         Next.js (npm run dev)        -> opens its own window
 
   Usage:
@@ -107,13 +108,23 @@ finally { Pop-Location }
 # Start-Process opens a fresh PowerShell window per server so you get live,
 # separately-scrollable logs and can Ctrl-C each one independently. -NoExit
 # keeps the window open after the server stops so you can read any error.
-Write-Step "Launching backend + frontend (each in its own window)"
+Write-Step "Launching backend + worker + frontend (each in its own window)"
 
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
     "cd '$root\backend'; .\.venv\Scripts\Activate.ps1; " +
     "Write-Host 'ProdRAG API - http://localhost:8000' -ForegroundColor Green; " +
     "uvicorn app.main:app --reload"
+)
+
+# The Celery worker consumes ingestion jobs from Redis and runs the reaper (Beat, via -B).
+# --pool=solo because Celery's default prefork pool is broken on Windows. Runs from
+# backend/ so it loads the same .env (GEMINI_API_KEY) the app does.
+Start-Process powershell -ArgumentList @(
+    "-NoExit", "-Command",
+    "cd '$root\backend'; .\.venv\Scripts\Activate.ps1; " +
+    "Write-Host 'ProdRAG Worker - Celery + Beat (reaper)' -ForegroundColor Green; " +
+    "celery -A app.worker worker -l info --pool=solo -B"
 )
 
 Start-Process powershell -ArgumentList @(
@@ -126,6 +137,6 @@ Start-Process powershell -ArgumentList @(
 Write-Step "Up."
 Write-Host "  API:      http://localhost:8000/health/db"
 Write-Host "  Frontend: http://localhost:3000"
-Write-Host "`nTwo new windows are running the servers. To stop:"
+Write-Host "`nThree new windows are running the API, worker, and frontend. To stop:"
 Write-Host "  - Ctrl-C in each server window (or just close them)"
 Write-Host "  - .\stop.ps1   to stop the Postgres/Redis containers"

@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import TYPE_CHECKING
 
+from sqlalchemy import func, update
+
 from app.config import get_settings
 from app.db import SessionLocal
 from app.ingest.chunk import chunk_document
@@ -79,7 +81,11 @@ class IngestResult:
     """
 
     document_id: uuid.UUID
-    status: str  # "ready" | "failed"
+    # "ready" | "failed" | "superseded" (a newer claim fenced this run out — it wrote
+    # nothing) | "skipped" (the document wasn't 'pending' when claimed — a redundant
+    # delivery). Only "ready"/"failed" are ever written to documents.status; the other
+    # two are in-memory signals for the worker's log, never a row state.
+    status: str
     chunk_count: int
     timings_ms: dict[str, float] = field(default_factory=dict)
     error: str | None = None
@@ -106,17 +112,47 @@ async def orchestrate(document_id: uuid.UUID) -> IngestResult:
 
     async with SessionLocal() as session:
         # --- Txn 1: claim the document --------------------------------------------
-        # Load the row, capture where its bytes live, and flip pending -> processing.
-        # Commit immediately: this makes progress observable to a poller and frees the
-        # connection so the slow parse/embed below never holds a transaction open.
+        # Load the row (to capture where its bytes live, and to fail loudly on a truly
+        # missing id), then claim it with a SINGLE atomic UPDATE: pending -> processing
+        # AND attempt = attempt + 1, returning the new token. The increment is done in
+        # SQL (not read-then-write on the ORM object) so two workers racing to claim the
+        # same row get DISTINCT tokens — the DB serializes the increments. That token,
+        # `my_attempt`, is this run's fencing key: only the holder of the current
+        # attempt may later write results, so a reaper can requeue a presumed-dead
+        # worker without the superseded run corrupting the winner. Commit at once so
+        # `processing` is observable to a poller and no transaction is held across the
+        # slow work below.
         doc = await session.get(Document, document_id)
         if doc is None:
             raise LookupError(f"orchestrate: no document with id {document_id}")
         source_uri = doc.source_uri
-        doc.status = "processing"
-        # Clear any error from a previous failed attempt (retry-friendly).
-        doc.error = None
+        claim = await session.execute(
+            update(Document)
+            .where(Document.id == document_id, Document.status == "pending")
+            .values(
+                status="processing",
+                attempt=Document.attempt + 1,
+                error=None,  # clear any error from a previous failed attempt
+                updated_at=func.now(),
+            )
+            .returning(Document.attempt)
+        )
+        my_attempt = claim.scalar_one_or_none()
         await session.commit()
+        if my_attempt is None:
+            # The row existed but wasn't 'pending' (already processing/ready/failed) — a
+            # redundant delivery (e.g. a reaper requeue that raced a finishing run). Not
+            # ours to run; step aside without touching it.
+            logger.info(
+                "ingest.skipped document_id=%s (not pending at claim)", document_id
+            )
+            timings["total_ms"] = _ms(started)
+            return IngestResult(
+                document_id=document_id,
+                status="skipped",
+                chunk_count=0,
+                timings_ms=timings,
+            )
 
         try:
             # --- Slow work: NO transaction held -----------------------------------
@@ -148,28 +184,67 @@ async def orchestrate(document_id: uuid.UUID) -> IngestResult:
             embeddings = await embed_texts(embed_inputs)
             timings["embed_ms"] = _ms(t)
 
-            # --- Txn 2: results, atomic -------------------------------------------
-            # write_chunks flushes (assigns PKs, surfaces constraint errors) but does
-            # not commit; setting status here and committing lands chunks + 'ready'
-            # together, so a mid-write failure can never leave a half-ready document.
+            # --- Txn 2: results, atomic + FENCED ----------------------------------
+            # The fence goes FIRST: flip to 'ready' only if attempt still equals the
+            # token we claimed with. If a reaper requeued this doc and a newer worker
+            # re-claimed it, attempt has moved past us -> 0 rows -> we're superseded:
+            # roll back and write NOTHING (before write_chunks, so the loser can never
+            # delete or overwrite the winner's rows). If we still hold the token, we own
+            # the row lock this UPDATE took; write_chunks then flushes
+            # chunks and we commit — chunks + 'ready' land together, so a mid-write
+            # failure can never leave a half-ready document.
             t = perf_counter()
+            won = await session.execute(
+                update(Document)
+                .where(Document.id == document_id, Document.attempt == my_attempt)
+                .values(status="ready", updated_at=func.now())
+                .returning(Document.id)
+            )
+            if won.scalar_one_or_none() is None:
+                await session.rollback()
+                timings["total_ms"] = _ms(started)
+                logger.info(
+                    "ingest.superseded document_id=%s attempt=%s (results)",
+                    document_id,
+                    my_attempt,
+                )
+                return IngestResult(
+                    document_id=document_id,
+                    status="superseded",
+                    chunk_count=0,
+                    timings_ms=timings,
+                )
             rows = await write_chunks(session, document_id, chunks, embeddings)
-            doc.status = "ready"
             await session.commit()
             timings["write_ms"] = _ms(t)
 
         except Exception as exc:  # noqa: BLE001
             # Any stage failure funnels here. The results transaction is poisoned; roll
-            # it back, then record the failure in a FRESH transaction so 'failed' + the
-            # reason survive that rollback. The blob is intentionally left in storage
-            # (retry/debug) — its lifecycle belongs to the row's creator, not this job.
+            # it back, then record the failure in a FRESH transaction — FENCED on the
+            # same token, so a superseded run that also errored won't clobber the
+            # winner's 'ready' with a failure. Blob left in storage (retry/debug) —
+            # its lifecycle belongs to the row's creator, not this job.
             await session.rollback()
-            failed = await session.get(Document, document_id)
-            if failed is not None:
-                failed.status = "failed"
-                failed.error = str(exc)
-                await session.commit()
+            recorded = await session.execute(
+                update(Document)
+                .where(Document.id == document_id, Document.attempt == my_attempt)
+                .values(status="failed", error=str(exc), updated_at=func.now())
+            )
+            await session.commit()
             timings["total_ms"] = _ms(started)
+            if recorded.rowcount == 0:
+                # Superseded before we recorded the failure — not ours to report.
+                logger.info(
+                    "ingest.superseded document_id=%s attempt=%s (on failure)",
+                    document_id,
+                    my_attempt,
+                )
+                return IngestResult(
+                    document_id=document_id,
+                    status="superseded",
+                    chunk_count=0,
+                    timings_ms=timings,
+                )
             logger.exception(
                 "ingest.failed document_id=%s error=%s timings_ms=%s",
                 document_id,

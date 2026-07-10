@@ -58,6 +58,24 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 768
     embedding_batch_size: int = 100
 
+    # Async ingestion layer (Celery + Redis). The worker consumes ingestion jobs from
+    # Redis (broker-only — no result backend; documents.status is the source of truth).
+    # Defaults point at the local docker-compose Redis. Override via CELERY_BROKER_URL.
+    celery_broker_url: str = "redis://localhost:6379/0"
+
+    # Stuck-job reaper knobs. `stuck_after` must exceed the longest legitimate
+    # processing time (a hi_res parse+embed is tens of seconds); the reaper flips
+    # 'processing' rows older than this back to 'pending' and requeues them, and the
+    # fence makes a too-eager requeue merely wasteful, never corrupting.
+    # `max_processing_attempts` is the poison-pill cap: past it the reaper marks a
+    # repeatedly-crashing doc 'failed' instead of looping forever. `reaper_interval`
+    # is the Beat cadence. Override via
+    # INGEST_STUCK_AFTER_SECONDS / INGEST_REAPER_INTERVAL_SECONDS /
+    # INGEST_MAX_PROCESSING_ATTEMPTS.
+    ingest_stuck_after_seconds: int = 600
+    ingest_reaper_interval_seconds: int = 120
+    ingest_max_processing_attempts: int = 3
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

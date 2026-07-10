@@ -9,19 +9,19 @@ pipeline itself:
     GET  /documents/{id} -> the poll a client uses to watch `status` reach ready/failed
 
 Two deliberate seams keep it offline and fast (the M6-test pattern):
-  - **Faked `orchestrate`.** The endpoint's module-level `orchestrate` is monkeypatched
-    to an async recorder — the background task fires the *name in this module*, so we
-    prove the job was kicked with the new doc id without running parse/embed/write or
-    touching Gemini. The real pipeline's own end-to-end proof is `test_orchestrate.py`.
+  - **Faked enqueue.** The endpoint's module-level `orchestrate_task.delay` (the Celery
+    send) is monkeypatched to a recorder — so we prove the job was ENQUEUED with the new
+    doc id without a broker, a worker, or running parse/embed/write. The real pipeline's
+    own end-to-end proof is `test_orchestrate.py`.
   - **A tmp-dir storage backend + the committing container factory.** `get_storage` is
     swapped for a `LocalDiskStorage` over `tmp_path`, and the request's DB session is
     overridden to the testcontainers Postgres via the *committing* `session_factory`
     (the endpoint must durably commit the `pending` row before the job looks it up).
 
-The app is driven in-process over ASGI with `httpx.AsyncClient` + `ASGITransport`; that
-transport runs Starlette background tasks as part of the request, so by the time a POST
-returns, the faked `orchestrate` has already been called — which is exactly how we
-assert the job was kicked.
+The app is driven in-process over ASGI with `httpx.AsyncClient` + `ASGITransport`. The
+enqueue is a synchronous `.delay(...)` call inside the handler, so by the time a POST
+returns the recorder has already captured the id — which is exactly how we assert the
+job was kicked.
 
 Needs a running Docker daemon (the testcontainers Postgres); it ERRORs, never SKIPs, if
 the daemon is down — the "a SKIP is a false green" stance the other DB tests take.
@@ -50,15 +50,15 @@ CONTENT_TYPE = "text/markdown"
 BODY = b"# Aurelia\n\nThe city of Aurelia sits on the river.\n"
 
 
-class _RecordingOrchestrate:
-    """Stand-in for M6 `orchestrate`: records the document ids the endpoint kicked a job
-    for. Async, to match the real coroutine (BackgroundTasks awaits an async callable).
-    Its return value is ignored — a fire-and-poll job's caller never reads it."""
+class _RecordingEnqueue:
+    """Stand-in for `orchestrate_task.delay`: records the (string) document ids the
+    endpoint enqueued a job for. Synchronous, like Celery's `.delay` send. Its return
+    value (normally an AsyncResult) is ignored — the client polls documents.status."""
 
     def __init__(self) -> None:
-        self.calls: list[uuid.UUID] = []
+        self.calls: list[str] = []
 
-    async def __call__(self, document_id: uuid.UUID) -> None:
+    def __call__(self, document_id: str) -> None:
         self.calls.append(document_id)
 
 
@@ -70,15 +70,15 @@ async def wired(
 ) -> SimpleNamespace:
     """Point the endpoint's collaborators at test doubles and hand back an ASGI client.
 
-    Storage -> a tmp-dir backend; `orchestrate` -> the recorder; the request DB session
-    -> the committing container factory (via FastAPI's dependency override, since the
-    endpoint depends on `get_session`). The override is removed at teardown so the app
-    is left clean for the next test.
+    Storage -> a tmp-dir backend; `orchestrate_task.delay` -> the recorder; the request
+    DB session -> the committing container factory (via FastAPI's dependency override,
+    since the endpoint depends on `get_session`). The override is removed at teardown so
+    the app is left clean for the next test.
     """
     storage = LocalDiskStorage(root=tmp_path)
-    recorder = _RecordingOrchestrate()
+    recorder = _RecordingEnqueue()
     monkeypatch.setattr(documents, "get_storage", lambda: storage)
-    monkeypatch.setattr(documents, "orchestrate", recorder)
+    monkeypatch.setattr(documents.orchestrate_task, "delay", recorder)
 
     async def _override_get_session():
         async with session_factory() as session:
@@ -121,8 +121,9 @@ async def test_upload_stores_row_and_kicks_job(wired: SimpleNamespace) -> None:
     assert await wired.storage.exists(source_uri) is True
     assert await wired.storage.load(source_uri) == BODY
 
-    # The ingestion job was kicked exactly once, for this doc id (background task ran).
-    assert wired.recorder.calls == [doc_id]
+    # The ingestion job was enqueued exactly once, for this doc id (the id is serialized
+    # to a string for the JSON broker, so that's what the recorder captures).
+    assert wired.recorder.calls == [str(doc_id)]
 
 
 async def test_upload_rejects_empty_file(wired: SimpleNamespace) -> None:

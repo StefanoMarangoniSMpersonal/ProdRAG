@@ -53,6 +53,11 @@ class Document(Base):
     source_uri: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     error: Mapped[str | None] = mapped_column(Text)
+    # Fencing token for the async ingestion job (see 002_schema.sql). Bumped once per
+    # claim; the results/failure commits are gated on it so a reaper can requeue a
+    # presumed-dead worker without the superseded run clobbering the winner.
+    # server_default so a plain Document(...) insert (never sets it) gets 0 from the DB.
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()

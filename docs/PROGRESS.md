@@ -4,12 +4,14 @@
 > changelog as milestones land — don't re-derive from scratch each time.
 > Companion to `docs/HANDOFF.md` (session state) and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-10 — M7 (upload endpoint) landed, completing Phase 1's ingestion
-> path: `POST /documents` stores the blob, inserts a `pending` row (filling
-> `byte_size`/`checksum`/`content_type`), kicks `orchestrate` via FastAPI `BackgroundTasks`,
-> and returns 202 + doc id; `GET /documents/{id}` is the status poll. The `BackgroundTasks`
-> kick is the one-line Celery seam (`.add_task(orchestrate, id)` → `orchestrate_task.delay`).
-> Suite = 30 pass + 2 deselected (live). Everything M0–M7 is committed & pushed._
+> _Last updated: 2026-07-10 — the **async layer** landed: the M7 `BackgroundTasks` kick is now
+> `orchestrate_task.delay(str(id))` onto a real **Celery worker** consuming from Redis
+> (broker-only), plus a Celery-Beat **stuck-job reaper** made safe by a new **attempt-fence**
+> (`documents.attempt`) threaded through `orchestrate`'s three transactions. Redis is now
+> wired; `write.py` (M5) untouched (fence-only idempotency). Suite = **35 pass + 2 deselected
+> (live)**. M0–M7 + housekeeping committed & pushed (`8fa0bd5`); the async layer is built &
+> green but **not yet committed**. Previously (same day): M7 upload endpoint (`POST /documents`
+> → 202 + poll)._
 
 ## How to read the scores
 
@@ -29,7 +31,7 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 |---|-------|------|-----------|-------------------|
 | 1 | Presentation (Frontend) | Next.js chat/upload UI, streaming, auth session | ~5% | **~10%** |
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
-| 3 | Async / task queue | Celery workers + Redis broker/cache | ~5% | **~25%** |
+| 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
 | 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~0% | **~15%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~55% | **~70%** |
@@ -38,7 +40,7 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
 
-**Weighted overall: ~19–21% (code-only) · ~36% (code + design).**
+**Weighted overall: ~22–24% (code-only) · ~39% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -47,13 +49,17 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 2. **API** — Phase 0 spine (CORS, async DB session, `GET /health` + `/health/db`) plus the
    **M7 ingestion surface**: `POST /documents` (202-and-poll upload) + `GET /documents/{id}`
    (status poll), on an `app/api/documents.py` router. The upload contract is now *code*, not
-   just spec — it stores the blob, inserts the `pending` row, and kicks `orchestrate` via
-   `BackgroundTasks` (the one-line Celery seam). Still to build: `ask`, `list`, streaming
-   (Phase 2).
-3. **Async / queue** — Redis container runs but is unwired. No Celery yet. Ingestion is
-   *job-shaped* by design so the Celery swap is one line (`await orchestrate(id)` →
-   `orchestrate.delay(id)`) — and `orchestrate` now exists in that exact shape (takes only a
-   `document_id`, returns a result no caller waits on), so the seam is real, not just planned.
+   just spec — it stores the blob, inserts the `pending` row, and now **enqueues** the job via
+   `orchestrate_task.delay(str(id))` onto Celery (the `BackgroundTasks` seam swapped, exactly
+   as designed). Still to build: `ask`, `list`, streaming (Phase 2).
+3. **Async / queue** — **now wired.** Redis is the Celery broker; `app/worker.py` holds the
+   Celery app, `orchestrate_task` (a sync task bridging to async `orchestrate` via
+   `asyncio.run` + a NullPool session factory installed at worker startup to dodge the
+   cross-event-loop asyncpg trap), and `reap_stuck_documents` (the Beat reaper). Broker-only:
+   no result backend — `documents.status` in Postgres is the source of truth. The
+   **attempt-fence** (`documents.attempt`, gated in orchestrate's three txns) makes the reaper
+   safe. Remaining gap to 100%: no result introspection/Flower, and the worker still uses a
+   direct DB connection (the Supavisor pooled-worker URL is the documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
 5. **Query pipeline** — no code; entire pipeline shape is locked (hybrid → RRF → cross-encoder
    → 5–10 chunks). Blocked on layer 4 landing embedded chunks.
@@ -91,32 +97,79 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
 | M5 | Write (elements → `Chunk` ORM rows + vectors; set `element_type`, store `text_as_html` in `metadata` JSONB) | ✅ complete & verified — `write_chunks` flushes (no commit; M6 owns the txn); mining + pgvector/JSONB round-trip under a real-Postgres testcontainers test |
 | M-enrich | LLM summary for `Table`/`Image` chunks → fills `embed_text` (runs between M3 and M4) | ⬜ deferred — gated on eval; needs a generation LLM client |
 | M6 | Orchestrator (self-contained coroutine keyed on `document_id`; three-txn lifecycle, owns the commit, `open_local` path seam, `IngestResult` + structured metrics) | ✅ complete & verified — real parse+chunk+write end-to-end + failure/atomic-rollback + missing-doc, under a committing real-Postgres test |
-| M7 | Upload endpoint (persist + `pending` row + kick job + 202 + doc id) | ✅ complete & verified — `POST /documents` + `GET /documents/{id}` on `app/api/documents.py`; empty upload → 400 before any write; job kicked via FastAPI `BackgroundTasks` (Celery seam); 4 immutable tests drive the ASGI app (httpx `ASGITransport`) over the real-Postgres container with `orchestrate` faked |
+| M7 | Upload endpoint (persist + `pending` row + kick job + 202 + doc id) | ✅ complete & verified — `POST /documents` + `GET /documents/{id}` on `app/api/documents.py`; empty upload → 400 before any write; job now **enqueued via `orchestrate_task.delay`** (was FastAPI `BackgroundTasks` at landing — the one-line Celery seam swapped in M8); 4 immutable tests drive the ASGI app (httpx `ASGITransport`) over the real-Postgres container with the enqueue faked |
+| M8 | Async layer (Celery worker + Redis broker + fenced stuck-job reaper) | ✅ complete & green (uncommitted) — `app/worker.py` (`orchestrate_task` sync→async bridge via `asyncio.run` + NullPool `SessionLocal` at worker start; `reap_stuck_documents` Beat reaper); **attempt-fence** `documents.attempt` threaded through orchestrate's 3 txns (claim-and-increment, then fence the results/failure commits) so a reaper requeue can't corrupt a live worker; broker-only (no result backend); `write.py` untouched (fence-only idempotency). 5 immutable tests (`test_worker.py`): superseded run writes nothing / doesn't stamp failed, non-pending claim skips, task bridge, reaper requeues-stale-and-fails-poison |
 
 ## Open loose ends (inside "done" work)
 
-- **M2 PDF path proven** — `test_parse_pdf_hi_res_infers_table_structure` drives a committed
-  table PDF (`tests/fixtures/quarterly_report.pdf`) under `hi_res` and asserts the Table keeps
+- **M2 PDF path proven** — `test_parse_pdf_hi_res_infers_table_structure` drives a table PDF
+  (`tests/fixtures/Proactive Autoscaling.pdf`) under `hi_res` and asserts the Table keeps
   `text_as_html`. poppler + tesseract confirmed installed. The suite now depends on those
   binaries (and downloads the table-transformer model on first run) for that one test — a
   deliberate trade to keep the table-structure guarantee under automated red/green.
+  ⚠ **Fixture footgun (resolved):** this PDF had only ever been *untracked*, so a working-tree
+  cleanup deleted it and the test broke (`FileNotFoundError`). It's restored and is being
+  **committed (tracked) with the async layer** so it can't vanish again; the test's two
+  `Falcon-9X` sanity lines stay commented out (immutable). `quarterly_report.pdf` is still a
+  committed fixture but no longer referenced by any test.
 - **Repo-wide lint status — all `app/` source clean; `test_embed.py` now clean too.** The
   `app/models.py` E501 nit is fixed (M6 session), and `tests/test_embed.py` was hand-cleaned
   (2026-07-07, alongside the batch fix — the `import os` is live again via the restored live-test
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **All of M0–M7 is committed & pushed** (`main` in sync with `origin/main`). The M7 commit
-  `e78ea6b` (pushed 2026-07-10) carries `app/api/documents.py`, the `app/api` package,
-  `test_upload.py`, the `main.py` wiring, `python-multipart` in `requirements.txt`, and the
-  HANDOFF/PROGRESS refreshes. **Deliberately held back** (a later/separate commit):
-  `backend/pyproject.toml` (the `fastapi.File` ruff exemption) and `infra/db/explore.sql` (the
-  DB browsing queries) — so `ruff check backend` flags B008 on `documents.py`'s `File(...)`
-  default until `pyproject.toml` lands. (`.vscode/settings.json`, the SQLTools connection, is
-  git-ignored and won't be committed.)
+- **M0–M7 + housekeeping are committed & pushed** (`main` in sync with `origin/main` at
+  `8fa0bd5`). The housekeeping commit `8fa0bd5` landed the two previously-held-back tooling
+  files — `backend/pyproject.toml` (the `fastapi.File` ruff B008 exemption) and
+  `infra/db/explore.sql` (the DB browsing queries) — so `ruff check backend` is now clean.
+  **Uncommitted (the async layer / M8, built & green — next commit):** `app/worker.py`,
+  `tests/test_worker.py`, `tests/fixtures/Proactive Autoscaling.pdf`, and edits to
+  `documents.py`, `orchestrate.py`, `models.py`, `002_schema.sql`, `config.py`,
+  `requirements.txt`, `test_upload.py`, `dev.ps1`. (`.vscode/settings.json`, the SQLTools
+  connection, is git-ignored and won't be committed.)
 
 ## Changelog
 
+- **2026-07-10 (async layer — M8)** — **ingestion is now production-shaped: a Celery worker
+  over Redis, with a fenced stuck-job reaper.** The M7 `BackgroundTasks` kick became
+  `orchestrate_task.delay(str(doc.id))` (`app/api/documents.py`); the new **`app/worker.py`**
+  holds the Celery app (broker-only — no result backend, `documents.status` stays the source
+  of truth), `orchestrate_task` (a *sync* task bridging to the *async* `orchestrate` via
+  `asyncio.run`), and `reap_stuck_documents` (a Celery-Beat reaper). Two traps handled in
+  code: (1) `asyncio.run` makes a fresh event loop per task, so reusing a pooled asyncpg
+  connection across loops raises "Future attached to a different loop" — the worker installs a
+  **NullPool** `async_sessionmaker` onto orchestrate's `SessionLocal` seam at
+  `worker_process_init`; (2) UUIDs cross the JSON broker as `str`, re-parsed in the task. On
+  Windows the worker must run `--pool=solo` (default prefork pool is broken). **The reaper is
+  made safe by an attempt-fence:** new column `documents.attempt` (`ALTER … ADD COLUMN IF NOT
+  EXISTS`, mirrored on the `Document` model) is a fencing token bumped once per claim;
+  `orchestrate`'s three transactions now (Txn 1) claim-and-increment atomically in SQL
+  (`WHERE status='pending' RETURNING attempt`; a non-pending row → `skipped` no-op), and
+  (Txn 2 results / Txn 3 failure) gate their commits on `attempt = my_attempt` — a superseded
+  run (a reaper requeued the doc and a newer worker re-claimed it) rolls back and writes zero
+  chunks / doesn't stamp `failed` over the winner. `IngestResult.status` gained `superseded`
+  and `skipped` (in-memory signals, never row states). **`write.py` (M5) untouched** — the
+  fence guarantees the winner always writes into an empty chunk set, so fence-only idempotency
+  suffices (no delete-then-insert). Reaper poison-pill cap: past
+  `ingest_max_processing_attempts` (default 3) it marks the doc `failed` instead of looping.
+  New config (`config.py`): `celery_broker_url`, `ingest_stuck_after_seconds` (600),
+  `ingest_reaper_interval_seconds` (120), `ingest_max_processing_attempts` (3). New dep
+  `celery[redis]==5.6.3` (Celery caps redis `<6.5`). `dev.ps1` opens a third window for the
+  worker+Beat. **Test-first, 5 immutable tests** (`test_worker.py`, on the committing
+  testcontainers `session_factory`): superseded run writes nothing / doesn't record `failed`,
+  non-pending claim skips, the task bridges to `orchestrate` (eager mode, sync test — the body
+  calls `asyncio.run`), and the reaper requeues a stale row + fails a poison one + leaves a
+  fresh one. **Authorized immutable-test revision** to `test_upload.py`: the `wired` fixture
+  now patches `documents.orchestrate_task.delay` (a recorder) instead of `documents.orchestrate`
+  — all other assertions byte-for-byte. Immutable `test_orchestrate.py` unchanged and still
+  green (single-worker behaviour identical: attempt 0→1, fence matches). Suite = **35 passed,
+  2 deselected (live), 0 skipped** (was 30+2); ruff clean. Also restored the
+  `Proactive Autoscaling.pdf` fixture the immutable parse test references (committed tracked
+  this time). Built & green; **commit pending**.
+- **2026-07-10 (housekeeping)** — landed the two files held back from the M7 commit
+  (`8fa0bd5`): `backend/pyproject.toml` (the `fastapi.File` ruff B008 exemption, so
+  `ruff check backend` is clean) and `infra/db/explore.sql` (the DB browsing queries), plus a
+  doc refresh. Pushed; `main` in sync with `origin/main`.
 - **2026-07-10 (verification + tooling)** — M7 proven live + DB inspection set up. Ran the opt-in
   `test_orchestrate_..._live` against **real Gemini** through the whole pipeline on the Aurelia
   fixture: 16 chunks written, doc `ready`, timings ≈ parse 4.5 s / embed 3.6 s / write 26 ms /
