@@ -20,11 +20,13 @@ walkthrough.
 | Phase | Scope | State |
 |------|-------|-------|
 | **Phase 0** | Stack spine — Next.js → FastAPI → Postgres/pgvector health path travels end to end | ✅ done |
-| **Phase 1 · M0** | Ingestion schema — `documents` + `chunks` tables, `vector(768)` column, migration runner | ✅ done |
-| **Phase 1 · M1–M8** | storage → parse → chunk → embed → write → upload endpoint (synchronous first) | ⏳ next |
-| **Phase 2** | Query pipeline — hybrid retrieve → RRF fusion → rerank → grounded answer + eval harness | ⬜ planned |
+| **Phase 1 · M0–M7** | Ingestion path — schema → storage → parse → chunk → embed → write → orchestrator → upload endpoint (`POST /documents` → 202 + poll) | ✅ done |
+| **Phase 1 · M8** | Async layer — Celery worker over Redis + fenced stuck-job reaper; **proven live** end to end (upload → worker → `ready`) | ✅ done |
+| **Phase 2** | Query pipeline — hybrid retrieve → RRF fusion → rerank → grounded answer + eval harness | ⏳ next |
 
-Redis is running via docker-compose but **not yet wired to code** (Celery/async ingestion comes later in Phase 1).
+Redis is now **wired** — it's the Celery broker for the ingestion worker (`backend/app/worker.py`).
+A file uploaded to `POST /documents` is parsed → chunked → embedded → written to `chunks` by the
+worker off the queue; the client polls `GET /documents/{id}` until `status` = `ready`.
 
 For a layer-by-layer completion breakdown (the 10 architectural layers, each scored code-only vs.
 code + design), see [`docs/PROGRESS.md`](./docs/PROGRESS.md) — the living development tracker.
@@ -59,9 +61,9 @@ Legend: **wired** = in code today · *planned* = decided, arrives in a later pha
 | Layer | Choice |
 |------|--------|
 | Frontend | **Next.js (App Router) · TypeScript · Tailwind** · *Supabase Auth* |
-| Backend | **Python · FastAPI (async)** · *Celery + Redis* |
+| Backend | **Python · FastAPI (async) · Celery + Redis** |
 | Data | **PostgreSQL + pgvector** · *Supabase (host)* · *AWS S3 (raw files; local disk in dev)* |
-| AI/ML | *Gemini (LLM)* · *`gemini-embedding-2` @ 768d* · *Unstructured (parse/OCR)* · *LangGraph (orchestration)* · *Guardrails* |
+| AI/ML | *Gemini (LLM)* · **`gemini-embedding-2` @ 768d** · **Unstructured (parse/OCR)** · *LangGraph (orchestration)* · *Guardrails* |
 | Infra | **Docker / docker-compose** · *AWS Fargate (one-time)* · GitHub |
 | Observability | *Sentry* · *LangSmith* · structured logging |
 
@@ -80,16 +82,22 @@ Legend: **wired** = in code today · *planned* = decided, arrives in a later pha
 ## Quick start (one command, Windows/PowerShell)
 
 ```powershell
-.\dev.ps1     # setup-if-needed (venv, deps, .env files, DB migrations), then starts all 3 pieces
+.\dev.ps1     # setup-if-needed (venv, deps, .env files, DB migrations), then starts every piece
 .\stop.ps1    # stops the Postgres/Redis containers
 ```
 
 `dev.ps1` is idempotent: the first run also does first-time setup, applies DB migrations, and
-opens the API and frontend each in their own window (live logs); later runs just restart the
-stack. Use `.\dev.ps1 -Reinstall` to force-reinstall dependencies. The manual steps below are
-the same thing broken out — useful when a step fails or on macOS/Linux.
+opens **four** windows each with live logs — the **API**, the **Celery worker**, **Celery Beat**
+(the stuck-job reaper scheduler), and the **frontend**; later runs just restart the stack. Use
+`.\dev.ps1 -Reinstall` to force-reinstall dependencies. The manual steps below are the same thing
+broken out — useful when a step fails or on macOS/Linux.
 
-## Run it manually (3 pieces)
+> **Windows note:** the worker runs `--pool=solo` (Celery's default prefork pool is broken on
+> Windows) and **Beat runs as its own process** — embedded Beat (`-B`) errors with "does not work
+> on Windows", so worker and Beat are two separate windows. Also use **`curl.exe`** (not bare
+> `curl`, which PowerShell aliases to `Invoke-WebRequest`) for file uploads with `-F`.
+
+## Run it manually (4 pieces)
 
 **1. Infra (Postgres + pgvector, Redis)**
 ```bash
@@ -112,7 +120,15 @@ uvicorn app.main:app --reload             # http://localhost:8000
 Check: `curl http://localhost:8000/health` → `{"status":"ok"}` ·
 `curl http://localhost:8000/health/db` → postgres + pgvector versions.
 
-**3. Frontend (Next.js)**
+**3. Worker (Celery) + Beat (reaper)** — consumes ingestion jobs off Redis. Two processes,
+from the same `backend/` venv (so they load the same `.env`, incl. `GEMINI_API_KEY`):
+```bash
+celery -A app.worker worker -l info --pool=solo    # Windows: --pool=solo is required
+celery -A app.worker beat -l info                  # separate process: -B is unsupported on Windows
+```
+On macOS/Linux you can fuse them with `celery -A app.worker worker -l info -B` instead.
+
+**4. Frontend (Next.js)**
 ```bash
 cd frontend
 npm install

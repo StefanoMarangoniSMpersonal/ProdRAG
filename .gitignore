@@ -8,6 +8,10 @@ __pycache__/
 .mypy_cache/
 *.egg-info/
 
+# Celery Beat's local schedule DB (runtime artifact, written where beat starts).
+celerybeat-schedule*
+celerybeat.pid
+
 # --- Node / frontend ---
 node_modules/
 .next/

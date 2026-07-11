@@ -3,17 +3,22 @@
 
   Idempotent: the FIRST run also does first-time setup (Python venv, backend
   deps, frontend deps, .env files) only where those are missing; EVERY run then
-  starts the three pieces of the stack. Safe to run repeatedly.
+  starts every piece of the stack. Safe to run repeatedly.
 
     Infra (docker):   Postgres + pgvector, Redis   -> runs in the background
     Backend:          FastAPI (uvicorn --reload)   -> opens its own window
-    Worker:           Celery + Beat (reaper)       -> opens its own window
+    Worker:           Celery worker                -> opens its own window
+    Beat (reaper):    Celery beat (stuck-job scan) -> opens its own window
     Frontend:         Next.js (npm run dev)        -> opens its own window
+
+  Windows note: Beat runs as a SEPARATE process, never embedded in the worker via
+  '-B' -- Celery rejects '-B' on Windows ("does not work on Windows"). On Linux
+  '-B' would fuse them; here they must be two processes.
 
   Usage:
     .\dev.ps1              # setup-if-needed, then start everything
     .\dev.ps1 -Reinstall   # force-reinstall backend + frontend deps first
-    .\stop.ps1             # stop the docker containers (close the 2 windows to stop servers)
+    .\stop.ps1             # stop the docker containers (close the server windows to stop them)
 #>
 
 param(
@@ -104,11 +109,11 @@ try {
 }
 finally { Pop-Location }
 
-# --- 4. Launch the two dev servers, each in its own window ------------------
+# --- 4. Launch the dev servers, each in its own window ----------------------
 # Start-Process opens a fresh PowerShell window per server so you get live,
 # separately-scrollable logs and can Ctrl-C each one independently. -NoExit
 # keeps the window open after the server stops so you can read any error.
-Write-Step "Launching backend + worker + frontend (each in its own window)"
+Write-Step "Launching backend + worker + beat + frontend (each in its own window)"
 
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
@@ -117,14 +122,25 @@ Start-Process powershell -ArgumentList @(
     "uvicorn app.main:app --reload"
 )
 
-# The Celery worker consumes ingestion jobs from Redis and runs the reaper (Beat, via -B).
-# --pool=solo because Celery's default prefork pool is broken on Windows. Runs from
-# backend/ so it loads the same .env (GEMINI_API_KEY) the app does.
+# The Celery worker consumes ingestion jobs from Redis. --pool=solo because Celery's
+# default prefork pool is broken on Windows. Runs from backend/ so it loads the same
+# .env (GEMINI_API_KEY) the app does. NOTE: no -B here -- Beat is a separate window
+# below, because embedded Beat (-B) is unsupported on Windows.
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
     "cd '$root\backend'; .\.venv\Scripts\Activate.ps1; " +
-    "Write-Host 'ProdRAG Worker - Celery + Beat (reaper)' -ForegroundColor Green; " +
-    "celery -A app.worker worker -l info --pool=solo -B"
+    "Write-Host 'ProdRAG Worker - Celery worker' -ForegroundColor Green; " +
+    "celery -A app.worker worker -l info --pool=solo"
+)
+
+# Celery Beat: the scheduler that periodically enqueues the stuck-job reaper
+# (reap_stuck_documents). Must be its own process on Windows (see -B note above);
+# the worker above executes whatever Beat schedules onto the queue.
+Start-Process powershell -ArgumentList @(
+    "-NoExit", "-Command",
+    "cd '$root\backend'; .\.venv\Scripts\Activate.ps1; " +
+    "Write-Host 'ProdRAG Beat - Celery beat (reaper scheduler)' -ForegroundColor Green; " +
+    "celery -A app.worker beat -l info"
 )
 
 Start-Process powershell -ArgumentList @(
@@ -137,6 +153,6 @@ Start-Process powershell -ArgumentList @(
 Write-Step "Up."
 Write-Host "  API:      http://localhost:8000/health/db"
 Write-Host "  Frontend: http://localhost:3000"
-Write-Host "`nThree new windows are running the API, worker, and frontend. To stop:"
+Write-Host "`nFour new windows are running the API, worker, beat, and frontend. To stop:"
 Write-Host "  - Ctrl-C in each server window (or just close them)"
 Write-Host "  - .\stop.ps1   to stop the Postgres/Redis containers"

@@ -1,11 +1,12 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-10. **Phase 1's ingestion PATH is complete AND now production-shaped:**
-a file travels from an HTTP upload all the way to retrievable chunks (M0–M7), and that job
-now runs on a **real Celery + Redis worker** with a **fenced stuck-job reaper**. Suite =
-**35 pass + 2 deselected (live)**. M0–M7 + housekeeping are committed & pushed (`main` at
-`8fa0bd5`, in sync with `origin/main`); the **async layer is built & green but not yet
-committed** (see Git state)._
+_Last updated: 2026-07-11. **Phase 1's ingestion PATH is complete, production-shaped, AND now
+proven live through the real worker:** a file travels from an HTTP upload all the way to
+retrievable chunks (M0–M7), and that job runs on a **real Celery + Redis worker** with a
+**fenced stuck-job reaper**. The HTTP-through-worker smoke test — the one piece never yet
+exercised — **passed on 2026-07-11** (see below). Suite = **35 pass + 2 deselected (live)**.
+Everything through the async layer is **committed & pushed** (`main` at `729e651`); this
+session's smoke test + `dev.ps1` Beat fix land on top._
 
 _This file keeps only **what's live + what's next**. Settled detail lives in the code,
 `docs/PROGRESS.md` (layer-by-layer % tracker), and auto-memory (`phase1-ingestion.md`,
@@ -21,10 +22,14 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
   Gemini; deselected by default, not skipped). Per-milestone detail: `PROGRESS.md` +
   memory `phase1-ingestion`.
 - **The pipeline is proven live (2026-07-10):** `test_orchestrate_..._live` ran the whole
-  thing against real Gemini on the Aurelia fixture — 16 chunks, doc `ready`, ~8.2 s. The
-  M7 upload endpoint's own tests fake the enqueue; an end-to-end HTTP-through-worker curl
-  smoke is in "Suggested first moves".
-- **The async layer landed this session (built, green, uncommitted).** The M7
+  thing against real Gemini on the Aurelia fixture — 16 chunks, doc `ready`, ~8.2 s.
+- **The async layer is now proven live end to end (2026-07-11):** the HTTP-through-worker
+  smoke test ran for the first time — `POST /documents` with `rag_test_document.md` →
+  `202 + id` → Celery worker picked the job off Redis → `pending → processing → ready`,
+  and the dev DB confirmed **16 chunks · 768-dim vectors · `attempt=1`** (the clean
+  single-worker fence path). This closes the last unexercised seam of M8; the enqueue →
+  broker → worker → NullPool-session → commit path all held.
+- **The async layer landed this session (committed & pushed, `729e651`).** The M7
   `BackgroundTasks` kick is now `orchestrate_task.delay(str(id))` onto a Celery worker
   consuming from the (previously idle) Redis; a Celery-Beat **reaper** recovers rows stuck
   in `processing`. What made the reaper *safe* is a new **attempt-fence** (a fencing-token /
@@ -45,13 +50,19 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
 ## How to run & test (assume nothing is running in a fresh session)
 
 ```powershell
-.\dev.ps1     # setup-if-needed (venv, deps, .env, migrations) + starts all 3 pieces
+.\dev.ps1     # setup-if-needed (venv, deps, .env, migrations) + starts every piece
 .\stop.ps1    # stops Postgres/Redis containers  (.\stop.ps1 -Wipe drops the pgdata volume)
 ```
-`dev.ps1` now opens **three** windows — API (:8000), the **Celery worker + Beat/reaper**
-(`celery -A app.worker worker -l info --pool=solo -B`), and frontend (:3000); verify with
+`dev.ps1` opens **four** windows — API (:8000), the **Celery worker**
+(`celery -A app.worker worker -l info --pool=solo`), a **separate Celery Beat/reaper**
+(`celery -A app.worker beat -l info`), and frontend (:3000); verify with
 `curl http://localhost:8000/health/db`. Manual steps + troubleshooting in `README.md`.
-(`--pool=solo` is mandatory on Windows — Celery's default prefork pool is broken there.)
+Two Windows gotchas, both handled by `dev.ps1`: `--pool=solo` is mandatory (Celery's default
+prefork pool is broken on Windows), and **Beat must be its own process** — embedded Beat
+(`-B`) errors out with "does not work on Windows", so the worker and Beat are two windows.
+Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
+- **Curl on Windows:** use **`curl.exe`**, not bare `curl` — in PowerShell `curl` is an alias
+  for `Invoke-WebRequest`, which doesn't understand `-F`/`@file` and will error on the upload.
 
 - **Tests:** `pytest.ini` is at the **repo root** — run from there, via the project venv
   explicitly: `backend\.venv\Scripts\python.exe -m pytest` (the ambient `python` may be
@@ -104,29 +115,24 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
 
 ## Git state
 
-- Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **`main` is in
-  sync with `origin/main`** at **`8fa0bd5`** — M0–M7 + housekeeping all committed & pushed.
-  Recent: `aeaacfc` (M6) → `232564a` (M4 batch fix) → `e78ea6b` (M7 upload endpoint) →
-  **`8fa0bd5` (housekeeping: ruff `File` whitelist, `infra/db/explore.sql`, doc refresh —
-  the two previously-held-back tooling files landed here)**. No `Co-Authored-By` trailer
-  (user preference). `ruff check backend` is now clean (the B008 exemption is in).
-- **UNCOMMITTED — the async layer (built & green this session; next commit):**
-  new `backend/app/worker.py` + `backend/tests/test_worker.py` (5 fence/bridge/reaper tests);
-  `backend/tests/fixtures/Proactive Autoscaling.pdf` (see below); and edits to
-  `backend/app/api/documents.py` (enqueue seam), `backend/app/ingest/orchestrate.py` (the
-  three-txn attempt-fence), `backend/app/models.py` + `infra/db/migrations/002_schema.sql`
-  (the `attempt` column), `backend/app/config.py` (Celery/reaper settings),
-  `backend/requirements.txt` (`celery[redis]`), `backend/tests/test_upload.py` (the
-  authorized faked-enqueue revision), and `dev.ps1` (worker window). **Git-ignored, will
-  NOT commit:** `.vscode/settings.json` (SQLTools connection).
+- Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. M0–M8 committed &
+  pushed at **`729e651`**; **this session adds a tooling/doc commit on top** (the `dev.ps1`
+  Beat-window fix + `.gitignore` `celerybeat-schedule*` + these doc updates — no app code,
+  no test change). Recent: `e78ea6b` (M7 upload endpoint) → `8fa0bd5` (housekeeping: ruff
+  `File` whitelist, `infra/db/explore.sql`, doc refresh) → **`729e651` (M8 async layer: Celery
+  worker + Redis broker + fenced reaper — `app/worker.py`, `test_worker.py`, the `attempt`
+  fence, the enqueue seam, config/deps/`dev.ps1`, and the now-tracked
+  `Proactive Autoscaling.pdf`, 13 files)** → **this session's `dev.ps1`/docs commit**. No
+  `Co-Authored-By` trailer (user preference).
+  `ruff check backend` clean. **Git-ignored, not committed:** `.vscode/settings.json`
+  (SQLTools connection).
 - **The `Proactive Autoscaling.pdf` fixture — resolved.** The immutable
   `test_parse_pdf_hi_res_infers_table_structure` references
   `tests/fixtures/Proactive Autoscaling.pdf`, but that file had only ever been *untracked*,
-  so a working-tree cleanup deleted it and the test broke. It has been **restored and will
-  be committed (tracked) with the async layer** so it can't vanish again — the test is green
-  again (98 s hi_res run). The test's two `Falcon-9X` sanity lines stay **commented out**
-  (immutable — not ours to edit). `quarterly_report.pdf` remains a committed fixture but is
-  now **unused** by any test.
+  so a working-tree cleanup deleted it and the test broke. It is now **restored and committed
+  (tracked) in `729e651`** so it can't vanish again — the test is green (98 s hi_res run). The
+  test's two `Falcon-9X` sanity lines stay **commented out** (immutable — not ours to edit).
+  `quarterly_report.pdf` remains a committed fixture but is now **unused** by any test.
 - **Credentials:** none in the repo. A PAT used for an earlier push was exposed in chat —
   **revoke it**; use `gh auth login` or SSH next time.
 
@@ -189,22 +195,22 @@ _Full milestone shapes + rationale + Windows/Unstructured gotchas are in memory
 
 ## Suggested first moves next session
 
-1. **Commit + push the async layer** (one commit, no `Co-Authored-By`): the full uncommitted
-   set in Git state — `app/worker.py`, `test_worker.py`, the fence (`orchestrate.py`,
-   `models.py`, `002_schema.sql`), the endpoint seam, `config.py`, `requirements.txt`,
-   `test_upload.py`, `dev.ps1`, **and `Proactive Autoscaling.pdf` (tracked this time)** — plus
-   these doc refreshes. Optional follow-up: a formatting-only commit for the `test_parse.py`
-   `black` debt (see Open items).
-2. **HTTP-through-worker smoke** (proves the async layer live end to end): `.\dev.ps1` (now
-   also starts the worker), then
-   `curl -F "file=@backend/tests/fixtures/rag_test_document.md" http://localhost:8000/documents`
-   → 202 + id; watch the **worker window** log the job; poll
-   `curl http://localhost:8000/documents/<id>` until `status` = `ready`, then watch the rows
-   via `infra/db/explore.sql`. Needs `GEMINI_API_KEY` in `backend/.env` and the docker-compose
-   Postgres + Redis up (not the testcontainer). Reaper check: shorten
-   `ingest_stuck_after_seconds`, leave a `processing` row with an old `updated_at`, watch Beat
-   requeue it and `attempt` increment.
-3. **Next milestone — Phase 2 retrieval** (the async layer was the other option, now done):
+1. **Next milestone — Phase 2 retrieval** (Phase 1 is now closed, smoke test passed):
    embed query → hybrid pgvector + full-text → RRF → cross-encoder rerank → generate → guard.
+   First code likely needs the two deferred derived structures switched on with no re-ingest:
+   the **HNSW index** (semantic half) and the **`tsvector` keyword column** (full-text/BM25
+   half), both currently commented in `002_schema.sql`.
+2. **Reaper still unverified live** (the smoke test proved the happy path, not the reaper):
+   with Beat now in its own `dev.ps1` window, shorten `ingest_stuck_after_seconds`, leave a
+   `processing` row with an old `updated_at`, and watch Beat requeue it + `attempt` increment.
+   Optional — the fence logic is under `test_worker.py`, so this is a live-confidence check.
+3. **Optional cleanup:** a formatting-only commit for the `test_parse.py` `black` debt (see
+   Open items).
 4. **Naive-first but still test-first** — the red/green net exists before the naive code. Slow
    down and teach on the RAG core.
+
+To re-run the smoke test: `.\dev.ps1`, then (note **`curl.exe`**, not `curl`):
+`curl.exe -F "file=@backend/tests/fixtures/rag_test_document.md" http://localhost:8000/documents`
+→ 202 + id; poll `curl.exe http://localhost:8000/documents/<id>` until `ready`; inspect via
+`infra/db/explore.sql`. Needs `GEMINI_API_KEY` in `backend/.env` + docker-compose Postgres +
+Redis up (not the testcontainer).
