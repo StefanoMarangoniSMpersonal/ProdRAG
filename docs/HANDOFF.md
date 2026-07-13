@@ -1,12 +1,12 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-11. **Phase 1's ingestion PATH is complete, production-shaped, AND now
-proven live through the real worker:** a file travels from an HTTP upload all the way to
-retrievable chunks (M0–M7), and that job runs on a **real Celery + Redis worker** with a
-**fenced stuck-job reaper**. The HTTP-through-worker smoke test — the one piece never yet
-exercised — **passed on 2026-07-11** (see below). Suite = **35 pass + 2 deselected (live)**.
-Everything through the async layer is **committed & pushed** (`main` at `729e651`); this
-session's smoke test + `dev.ps1` Beat fix land on top._
+_Last updated: 2026-07-13 (end of session). **Phase 1 is DONE**; **Phase 2 has started — Q1
+(retrieval indexes) is complete & verified, NOT yet committed.** Migration `003` switched on the
+HNSW vector index + a generated `tsv tsvector` column (+ GIN), `Chunk.tsv` is mapped, and the test
+harness now globs all migrations — applied to the existing dev rows with **no re-ingest**. Suite =
+**38 pass + 2 deselected (live)** (was 35). Working tree is **dirty**: Q1 code + docs + the still-
+untracked `docs/PHASE2-PLAN.md` are uncommitted; `main` still at `c2994f9`. **Next session starts
+at Q2** (`app/retrieve/semantic.py`). The approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`._
 
 _This file keeps only **what's live + what's next**. Settled detail lives in the code,
 `docs/PROGRESS.md` (layer-by-layer % tracker), and auto-memory (`phase1-ingestion.md`,
@@ -17,10 +17,10 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
 - **Done & verified:** Phase 0 spine (Next.js → FastAPI → Postgres/pgvector → back),
   Phase 1 **M0–M7** (schema → storage → parse → chunk → embed → write → orchestrator →
   upload endpoint), and the **async layer** (Celery worker + Redis broker + fenced reaper).
-  Suite = **35 offline pass + 2 deselected live** (the 2 live tests —
-  `test_embed_live_real_gemini` + `test_orchestrate_..._live` — both pass against real
-  Gemini; deselected by default, not skipped). Per-milestone detail: `PROGRESS.md` +
-  memory `phase1-ingestion`.
+  Suite = **38 offline pass + 2 deselected live** (35 through M8 + 3 from Q1; the 2 live
+  tests — `test_embed_live_real_gemini` + `test_orchestrate_..._live` — both pass against
+  real Gemini; deselected by default, not skipped). Per-milestone detail: `PROGRESS.md` +
+  memory `phase1-ingestion` / `phase2-retrieval`.
 - **The pipeline is proven live (2026-07-10):** `test_orchestrate_..._live` ran the whole
   thing against real Gemini on the Aurelia fixture — 16 chunks, doc `ready`, ~8.2 s.
 - **The async layer is now proven live end to end (2026-07-11):** the HTTP-through-worker
@@ -39,10 +39,24 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
   writing (the superseded run writes zero chunks). Redis is **broker-only** — no result
   backend; `documents.status` stays the single source of truth. See "Seams" + memory
   `phase1-ingestion`.
-- **Next up — Phase 2 retrieval** (the remaining live option; the async layer was the
-  other): the query pipeline reads M7's embedded chunks — embed query (`as_retrieval_query`,
-  already built) → hybrid pgvector + full-text → RRF → cross-encoder rerank → generate →
-  guard. The higher-learning RAG-core work.
+- **Phase 2 retrieval — IN PROGRESS. Q1 done (2026-07-13), next = Q2.** The query pipeline reads
+  M7's embedded chunks — embed query (`as_retrieval_query`, already built) → hybrid pgvector +
+  full-text → RRF → cross-encoder rerank → generate. Full milestone breakdown (Q1–Q10) approved in
+  **`docs/PHASE2-PLAN.md`**. Locked decisions: **eval is woven** (retrieval hit@k/MRR after Q2, full
+  RAGAS after generation); **LangGraph wrapped later** (plain async functions first, a Phase-2.5
+  refactor); **reranker provider decided at Q7**; **Phase 2 scope = a working `POST /ask`** —
+  LangGraph, Guardrails, streaming are Phase 2.5.
+  - **Q1 (retrieval indexes) COMPLETE & verified, uncommitted.** New append-only
+    `infra/db/migrations/003_retrieval_indexes.sql`: `idx_chunks_embedding_hnsw` (HNSW,
+    `vector_cosine_ops`), generated `tsv tsvector` column, `idx_chunks_tsv` (GIN). `Chunk.tsv`
+    mapped read-only (`Computed(..., persisted=True)`; `write.py` untouched). `conftest.py` now
+    globs all `*.sql` migrations (was hardcoded to `002`). Test-first `test_retrieve_schema.py` (3
+    tests) + teaching note `docs/learning/Q1-indexes.md`. Applied to the dev DB in place, no
+    re-ingest (verified). Suite 38+2.
+  - **Q2 is next:** `app/retrieve/semantic.py` — `search_semantic(session, query_embedding, *, k,
+    owner_id) -> list[ScoredChunk]`, cosine order (`Chunk.embedding.cosine_distance`), owner-filtered,
+    `SET hnsw.ef_search` recall knob. New `app/retrieve/` package mirrors `app/ingest/*` conventions
+    (module-level monkeypatch seams, frozen result dataclass with `timings_ms`). Test-first.
 - **Test-first & immutable is a hard rule:** write the failing test first; once written a
   test is immutable — fix the code, never the test; if the spec is wrong, stop and ask.
   Full text in `CLAUDE.md`; memory `testing-test-first-immutable`.
@@ -83,7 +97,12 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
   (`TRUNCATE`d per test, container destroyed on exit). The **persistent dev DB** is
   `prodrag-postgres` (docker-compose, `localhost:5432`, db/user/pass all `prodrag`, volume
   `infra_pgdata`) — where a real `POST /documents` lands and what survives restarts. It
-  currently holds one Aurelia ingest (1 `documents` + 16 `chunks`).
+  currently holds **2 `documents` + 32 `chunks`**: the same file (`rag_test_document.md`, same
+  checksum) ingested twice — a 2026-07-10 direct-orchestrate run (`attempt=0`, pre-fence) and
+  the 2026-07-11 M8 Celery smoke test (`attempt=1`). (No "Aurelia" row — an earlier handoff note
+  said so; it was stale.) Two rows for identical content is expected: **upload dedup is deferred**,
+  so each upload = a new doc id (the `checksum` column exists to add skip-if-unchanged later).
+  Both are `ready`, 16 chunks each, and gained the Q1 `tsv`/HNSW index in place.
 - **Inspecting the dev DB.** CLI: `docker exec -it prodrag-postgres psql -U prodrag -d
   prodrag`. GUI: **VS Code SQLTools** + PostgreSQL driver are installed (connection in
   git-ignored `.vscode/settings.json`). Ready browsing queries: **`infra/db/explore.sql`**
@@ -95,8 +114,9 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
 
 - **`/infra`** — `docker-compose.yml`: Postgres (`pgvector/pgvector:pg16`) + Redis.
   `db/init/001_pgvector.sql` enables the extension; schema in `db/migrations/002_schema.sql`
-  (applied by `apply-migrations.ps1`); `db/explore.sql` = read-only browsing queries. Redis
-  is now **wired** — it's the Celery broker for the ingestion worker (`app/worker.py`).
+  **+ `003_retrieval_indexes.sql`** (Q1: HNSW + `tsv`/GIN), both applied in filename order by
+  `apply-migrations.ps1`; `db/explore.sql` = read-only browsing queries. Redis is **wired** —
+  the Celery broker for the ingestion worker (`app/worker.py`).
 - **`/backend`** — FastAPI (pip + venv). `GET /health` + `/health/db`; the **M7 ingestion
   API** in `app/api/documents.py` (`POST /documents`, `GET /documents/{id}`), mounted in
   `app/main.py`. `app/db.py` (SQLAlchemy 2.x + asyncpg), `app/config.py`, `app/models.py`
@@ -108,24 +128,29 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
   `python-multipart==0.0.20` (M7 `UploadFile`), **`celery[redis]==5.6.3`** (async layer);
   `testcontainers[postgres]==4.14.2` in `requirements-dev.txt`. `tests/conftest.py` = the
   testcontainers harness (session container + rolled-back per-test `db_session` + committing
-  `session_factory`).
+  `session_factory`); as of Q1 it **globs & applies every `infra/db/migrations/*.sql`** in order
+  (was hardcoded to `002`), so the test schema matches what `apply-migrations.ps1` builds.
+- **`/docs`** — decisions/notes; `PROGRESS.md` (layer tracker), `PHASE2-PLAN.md` (approved Q1–Q10,
+  still untracked), and **`docs/learning/`** (new — per-milestone teaching notes; holds
+  `Q1-indexes.md`).
 - **`/frontend`** — Next.js (App Router, TS, Tailwind v4); fetches `/health/db`, builds clean.
 - **Tooling** — `dev.ps1` / `stop.ps1`; `README.md` (GitHub front page); `.gitignore`
   hardened (`backend/.env` git-ignored).
 
 ## Git state
 
-- Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. M0–M8 committed &
-  pushed at **`729e651`**; **this session adds a tooling/doc commit on top** (the `dev.ps1`
-  Beat-window fix + `.gitignore` `celerybeat-schedule*` + these doc updates — no app code,
-  no test change). Recent: `e78ea6b` (M7 upload endpoint) → `8fa0bd5` (housekeeping: ruff
-  `File` whitelist, `infra/db/explore.sql`, doc refresh) → **`729e651` (M8 async layer: Celery
-  worker + Redis broker + fenced reaper — `app/worker.py`, `test_worker.py`, the `attempt`
-  fence, the enqueue seam, config/deps/`dev.ps1`, and the now-tracked
-  `Proactive Autoscaling.pdf`, 13 files)** → **this session's `dev.ps1`/docs commit**. No
-  `Co-Authored-By` trailer (user preference).
-  `ruff check backend` clean. **Git-ignored, not committed:** `.vscode/settings.json`
-  (SQLTools connection).
+- Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **`main` still at
+  `c2994f9`** (in sync with `origin/main`); everything through M8 + the dev.ps1 fix is committed &
+  pushed, but **the Q1 work is uncommitted — working tree is dirty.** Recent: `8fa0bd5`
+  (housekeeping) → **`729e651` (M8 async layer)** → **`c2994f9` (dev.ps1 Beat-window fix + doc
+  refresh)**. No `Co-Authored-By` trailer (user preference). `ruff check backend` clean.
+- **Uncommitted (Q1 — user is reviewing before commit):**
+  - New: `infra/db/migrations/003_retrieval_indexes.sql`, `backend/tests/test_retrieve_schema.py`,
+    `docs/learning/Q1-indexes.md`.
+  - Edited: `backend/app/models.py` (`Chunk.tsv` + `Computed`/`TSVECTOR` imports),
+    `backend/tests/conftest.py` (glob all migrations), `docs/PROGRESS.md` + `docs/HANDOFF.md` (this).
+  - Still untracked from before: `docs/PHASE2-PLAN.md` (fold into the Q1 commit or its own doc commit).
+  - **Git-ignored, never committed:** `.vscode/settings.json` (SQLTools connection).
 - **The `Proactive Autoscaling.pdf` fixture — resolved.** The immutable
   `test_parse_pdf_hi_res_infers_table_structure` references
   `tests/fixtures/Proactive Autoscaling.pdf`, but that file had only ever been *untracked*,
@@ -151,9 +176,11 @@ _Full milestone shapes + rationale + Windows/Unstructured gotchas are in memory
 - **`chunks` schema (what retrieval reads).** `chunks` (bigint-identity PK, `document_id`
   uuid FK): `content`, `embedding vector(768)`, `char_count`, `token_count`, `element_type`,
   `section_title`, `page_number`, `metadata jsonb` (holds a table's `text_as_html`),
-  `owner_id`, `UNIQUE(document_id, ordinal)`. The **HNSW index + `tsvector` keyword column
-  are deferred** (commented in `002_schema.sql`) — both derive from stored data, so Phase 2
-  adds them with **no re-ingest**.
+  `owner_id`, `UNIQUE(document_id, ordinal)`. **As of Q1 the HNSW index + `tsv` `tsvector`
+  column (+ GIN index) are LIVE** (migration `003`; `Chunk.tsv` mapped read-only). `tsv` is
+  `GENERATED ALWAYS AS (to_tsvector('english', content)) STORED` — the DB owns it, never written
+  by the app. So Q2 semantic search reads `embedding` via `cosine_distance` (`<=>`), and Q5
+  lexical search reads `tsv` via `@@ websearch_to_tsquery`.
 - **Query-side embedding is already built.** `as_retrieval_query(text)` + `embed_texts`
   (`app/ingest/embed.py`) are the exact calls the retrieval step makes — role is a text
   **prefix**, `gemini-embedding-2` has no `task_type`; each input must be its own
@@ -195,19 +222,24 @@ _Full milestone shapes + rationale + Windows/Unstructured gotchas are in memory
 
 ## Suggested first moves next session
 
-1. **Next milestone — Phase 2 retrieval** (Phase 1 is now closed, smoke test passed):
-   embed query → hybrid pgvector + full-text → RRF → cross-encoder rerank → generate → guard.
-   First code likely needs the two deferred derived structures switched on with no re-ingest:
-   the **HNSW index** (semantic half) and the **`tsvector` keyword column** (full-text/BM25
-   half), both currently commented in `002_schema.sql`.
-2. **Reaper still unverified live** (the smoke test proved the happy path, not the reaper):
-   with Beat now in its own `dev.ps1` window, shorten `ingest_stuck_after_seconds`, leave a
+0. **Commit Q1 first** (it's done & verified but uncommitted — see Git state for the exact file
+   list). Fold in the untracked `docs/PHASE2-PLAN.md`. Then **start Q2** — semantic retrieval:
+   new `app/retrieve/` package, `app/retrieve/semantic.py` `search_semantic(session,
+   query_embedding, *, k, owner_id) -> list[ScoredChunk]` (frozen dataclass = `Chunk` + `score`),
+   ordering by `Chunk.embedding.cosine_distance(vec)` ascending, owner-filtered, `limit k`; the
+   `SET hnsw.ef_search` recall knob per session. Test-first (`test_semantic.py`, seed committed
+   chunks with known `_axis_vec`-style vectors → nearest returns first, `k` truncates). Mirror the
+   `app/ingest/*` conventions: module-level monkeypatch seams, frozen result object with `timings_ms`.
+1. **Phase 2 mindset:** each milestone ships test-first code **plus** a teaching note
+   `docs/learning/Qx-*.md` (Q1's is `Q1-indexes.md`); fill the `explain-retrieval` / `eval-run`
+   skills as their stages land (still scaffolds). Slow down and teach — this is the RAG core.
+2. **Reaper still unverified live** (the M8 smoke test proved the happy path, not the reaper):
+   with Beat in its own `dev.ps1` window, shorten `ingest_stuck_after_seconds`, leave a
    `processing` row with an old `updated_at`, and watch Beat requeue it + `attempt` increment.
    Optional — the fence logic is under `test_worker.py`, so this is a live-confidence check.
 3. **Optional cleanup:** a formatting-only commit for the `test_parse.py` `black` debt (see
    Open items).
-4. **Naive-first but still test-first** — the red/green net exists before the naive code. Slow
-   down and teach on the RAG core.
+4. **Naive-first but still test-first** — the red/green net exists before the naive code.
 
 To re-run the smoke test: `.\dev.ps1`, then (note **`curl.exe`**, not `curl`):
 `curl.exe -F "file=@backend/tests/fixtures/rag_test_document.md" http://localhost:8000/documents`

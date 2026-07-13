@@ -4,16 +4,16 @@
 > changelog as milestones land — don't re-derive from scratch each time.
 > Companion to `docs/HANDOFF.md` (session state) and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-11 — the **async layer is now proven live end to end**: the
-> HTTP-through-worker smoke test ran for the first time (`POST /documents` → Redis → Celery
-> worker → `ready`, 16 chunks · 768-dim · `attempt=1`), closing M8's last unexercised seam.
-> Also fixed a `dev.ps1` Windows bug — Beat now runs in its own window (embedded `-B` is
-> rejected on Windows). Previously (2026-07-10): the **async layer** landed & was committed
-> (`729e651`) — the M7 `BackgroundTasks` kick became `orchestrate_task.delay(str(id))` onto a
-> real **Celery worker** over Redis (broker-only), plus a Celery-Beat **stuck-job reaper** made
-> safe by an **attempt-fence** (`documents.attempt`) threaded through `orchestrate`'s three
-> transactions; `write.py` (M5) untouched (fence-only idempotency). Suite = **35 pass + 2
-> deselected (live)**._
+> _Last updated: 2026-07-13 — **Phase 2 has started: Q1 (retrieval indexes) is done & verified,
+> not yet committed.** A new append-only `003_retrieval_indexes.sql` switches on the **HNSW**
+> vector index (`vector_cosine_ops`) + a generated **`tsv tsvector`** column and its **GIN**
+> index; `Chunk.tsv` is mapped read-only; the testcontainers harness now **globs all migrations**
+> (was hardcoded to `002`). Both objects derive from stored data → applied to the existing dev
+> rows **with no re-ingest** (verified: row count unchanged, `tsv` auto-populated, EXPLAIN shows
+> the HNSW index is valid). Test-first (`test_retrieve_schema.py`) + teaching note
+> (`docs/learning/Q1-indexes.md`). Suite = **38 pass + 2 deselected (live)** (was 35). Previously
+> (2026-07-11): the async layer was proven live end to end (HTTP-through-worker smoke test) and a
+> `dev.ps1` Windows Beat-window fix landed (`c2994f9`)._
 
 ## How to read the scores
 
@@ -35,14 +35,14 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
-| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~0% | **~15%** |
-| 6 | Data & storage | Postgres+pgvector, schema, blob store | ~55% | **~70%** |
+| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~3% | **~18%** |
+| 6 | Data & storage | Postgres+pgvector, schema, blob store | ~65% | **~76%** |
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
 
-**Weighted overall: ~22–24% (code-only) · ~39% (code + design).**
+**Weighted overall: ~24–26% (code-only) · ~41% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -67,11 +67,15 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    the worker still uses a direct DB connection (the Supavisor pooled-worker URL is the
    documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
-5. **Query pipeline** — no code; entire pipeline shape is locked (hybrid → RRF → cross-encoder
-   → 5–10 chunks). Blocked on layer 4 landing embedded chunks.
+5. **Query pipeline** — **Phase 2 started.** Q1 landed the *storage substrate* (HNSW + `tsv`,
+   see Layer 6), but no query *code* yet — `app/retrieve/` doesn't exist. Entire pipeline shape
+   is locked (hybrid → RRF → cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is
+   `docs/PHASE2-PLAN.md`. Next = **Q2** (`app/retrieve/semantic.py`, naive vector search).
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
-   round-trip tested; local-disk storage seam done. HNSW index, `tsvector` column, and S3 are
-   deferred *by design* (all derived from stored data → no re-ingest to switch on).
+   round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
+   switched on (Q1, migration `003`)** — both derived from stored data, applied with no
+   re-ingest, and verified against the dev DB (EXPLAIN confirms the HNSW index serves the
+   cosine `ORDER BY`). S3 blob store is still deferred *by design*.
 7. **AI / ML** — **embeddings now wired** (`embed_texts` via Gemini `google-genai`, 768d,
    auto-normalized by v2 + a defensive L2 no-op; surface decided = Developer API, not Vertex).
    Doc/query role is a text **prefix** (`as_retrieval_document` / `as_retrieval_query`), not a
@@ -106,6 +110,24 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
 | M7 | Upload endpoint (persist + `pending` row + kick job + 202 + doc id) | ✅ complete & verified — `POST /documents` + `GET /documents/{id}` on `app/api/documents.py`; empty upload → 400 before any write; job now **enqueued via `orchestrate_task.delay`** (was FastAPI `BackgroundTasks` at landing — the one-line Celery seam swapped in M8); 4 immutable tests drive the ASGI app (httpx `ASGITransport`) over the real-Postgres container with the enqueue faked |
 | M8 | Async layer (Celery worker + Redis broker + fenced stuck-job reaper) | ✅ complete, committed (`729e651`) **& proven live** — `app/worker.py` (`orchestrate_task` sync→async bridge via `asyncio.run` + NullPool `SessionLocal` at worker start; `reap_stuck_documents` Beat reaper); **attempt-fence** `documents.attempt` threaded through orchestrate's 3 txns (claim-and-increment, then fence the results/failure commits) so a reaper requeue can't corrupt a live worker; broker-only (no result backend); `write.py` untouched (fence-only idempotency). 5 immutable tests (`test_worker.py`): superseded run writes nothing / doesn't stamp failed, non-pending claim skips, task bridge, reaper requeues-stale-and-fails-poison. **HTTP-through-worker smoke passed 2026-07-11** (upload → Redis → worker → `ready`, 16 chunks · 768d · `attempt=1`) |
 
+## Query / retrieval milestones (Layer 5 detail)
+
+Phase 2 breaks into **Q1–Q10** (approved plan: `docs/PHASE2-PLAN.md`). Each ships test-first
+code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get an ADR.
+
+| Milestone | What | Status |
+|-----------|------|--------|
+| Q1 | Schema switch-on: HNSW index + generated `tsv tsvector` + GIN index (migration `003`; `Chunk.tsv` mapped; conftest globs all migrations) | ✅ complete & verified (not yet committed) — `test_retrieve_schema.py`; note `docs/learning/Q1-indexes.md`; dev DB migrated in place, no re-ingest |
+| Q2 | Semantic retrieval — `app/retrieve/semantic.py` `search_semantic → list[ScoredChunk]`, cosine order, `ef_search` knob | ⬜ next |
+| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ⬜ |
+| Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ⬜ |
+| Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ⬜ |
+| Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ⬜ |
+| Q7 | Cross-encoder rerank — retrieve-wide → rerank to 5–10; **provider decision (ADR)** | ⬜ |
+| Q8 | Generation — grounded, cited answer via a new Gemini generation client (ADR: model + citation granularity) | ⬜ |
+| Q9 | Full RAGAS answer-eval (faithfulness / relevance / context precision+recall) | ⬜ |
+| Q10 | Query API endpoint `POST /ask` (request-shaped) + per-query structured log | ⬜ |
+
 ## Open loose ends (inside "done" work)
 
 - **M2 PDF path proven** — `test_parse_pdf_hi_res_infers_table_structure` drives a table PDF
@@ -133,6 +155,32 @@ The pipeline is broken into M0–M7. This is where near-term progress happens.
 
 ## Changelog
 
+- **2026-07-13 (Phase 2 begins — Q1: retrieval indexes)** — switched on the two DB capabilities
+  the query pipeline reads, both derived from already-stored data so they applied to the existing
+  dev rows **with no re-ingest**. New append-only **`infra/db/migrations/003_retrieval_indexes.sql`**
+  (successor to the immutable `002`; `IF NOT EXISTS` throughout): **`idx_chunks_embedding_hnsw`**
+  (HNSW, `vector_cosine_ops` — cosine because embeddings are L2-normalized at ingest, so cosine ≡
+  inner product); a generated **`tsv tsvector`** column (`GENERATED ALWAYS AS
+  (to_tsvector('english', content)) STORED` — the DB keeps it in sync with `content`, the app never
+  writes it); and **`idx_chunks_tsv`** (GIN). **`Chunk.tsv`** mapped read-only on the model
+  (`mapped_column(TSVECTOR, Computed(..., persisted=True))`) so the model stays a complete mirror of
+  the schema (Option A); `write.py` untouched. **Harness change (the gotcha):** `conftest.py`
+  hardcoded applying only `002_schema.sql`, so a `003` file would never reach the testcontainer —
+  it now **globs `infra/db/migrations/*.sql` in filename order** (mirroring `apply-migrations.ps1`),
+  so the test schema is built by the same path as the dev DB and every future migration auto-applies
+  (closes a "forgot to register a migration → false green" class). **Test-first, 3 immutable tests**
+  (`test_retrieve_schema.py`, committing `session_factory`): index presence via `pg_indexes` (not
+  *usage* — would flap on a tiny table), nearest-vector order via `Chunk.embedding.cosine_distance`
+  (works without the index — HNSW changes speed, not results), and `tsv @@ websearch_to_tsquery`
+  full-text match. Teaching note **`docs/learning/Q1-indexes.md`** (new `docs/learning/` folder):
+  ANN vs exact, HNSW `m`/`ef_construction`/`ef_search`, cosine-on-normalized, GIN vs GiST, and why
+  Postgres FTS is "BM25-ish" not Okapi (ParadeDB/`pg_search` = the deferred real-BM25 upgrade).
+  **Verified:** suite **38 pass + 2 deselected (live), 0 skip** (was 35); ruff clean, black clean on
+  touched files (only pre-existing immutable `test_parse.py` still fails black). Dev DB migrated in
+  place via `apply-migrations.ps1` — row count unchanged (32 chunks / 2 docs), `tsv` populated on all
+  32, both indexes present, EXPLAIN shows a Seq Scan naturally (32 rows) but `Index Scan using
+  idx_chunks_embedding_hnsw` under `enable_seqscan=off` (index valid; planner picks it as the corpus
+  grows). **Not yet committed — under review.**
 - **2026-07-11 (async layer proven live + `dev.ps1` Windows fix)** — ran the **HTTP-through-
   worker smoke test** for the first time — the one seam of M8 never previously exercised (all
   prior live proof was in-process via `test_orchestrate_..._live`, never through a real Celery

@@ -15,13 +15,14 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
     ForeignKey,
     Integer,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Fixed dev-user id used until Supabase Auth lands. Because owner_id already exists
@@ -102,6 +103,14 @@ class Chunk(Base):
     # while the DB column stays `metadata`.
     metadata_: Mapped[dict] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict
+    )
+    # Full-text search vector (Q1). A GENERATED ... STORED column the DB derives from
+    # `content`; `Computed(..., persisted=True)` tells SQLAlchemy the DB owns the value,
+    # so it's read-only and never sent on INSERT/UPDATE (write_chunks stays untouched).
+    # Mapped so the model stays a complete mirror of 003_retrieval_indexes.sql
+    # (Option A); Q5 lexical search references Chunk.tsv typed.
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True)
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

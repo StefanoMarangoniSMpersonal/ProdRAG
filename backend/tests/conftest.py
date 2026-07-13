@@ -8,8 +8,9 @@ the suite boots and destroys itself (`testcontainers`), isolated from the dev da
 Two fixtures, two scopes:
 
   `_pg_url` (session scope, SYNC): boots ONE `pgvector/pgvector:pg16` container for the
-      whole test session and applies `infra/db/migrations/002_schema.sql` into it once,
-      then hands back an asyncpg SQLAlchemy URL. It's a *sync* fixture on purpose —
+      whole test session and applies every `infra/db/migrations/*.sql` (filename order,
+      like apply-migrations.ps1) into it once, then hands back an asyncpg URL.
+      It's a *sync* fixture on purpose —
       testcontainers is synchronous, and pytest-asyncio pins fixture event loops to
       *function* scope (see pytest.ini), so a session-scoped *async* fixture would
       bind to a loop the per-test loops don't share ("different loop" errors).
@@ -49,15 +50,14 @@ from sqlalchemy.ext.asyncio import (
 )
 from testcontainers.postgres import PostgresContainer
 
-# repo-root/infra/db/migrations/002_schema.sql — conftest.py is at backend/tests/, so
-# parents[2] is the repo root.
-_SCHEMA_SQL = (
-    Path(__file__).resolve().parents[2]
-    / "infra"
-    / "db"
-    / "migrations"
-    / "002_schema.sql"
-)
+# repo-root/infra/db/migrations/ — conftest.py is at backend/tests/, so parents[2] is
+# the repo root. We apply EVERY *.sql here in filename order, mirroring what
+# apply-migrations.ps1 does for the dev DB — so the test container is built by the same
+# construction path (same files, same order) as the real database. A new numbered
+# migration (003, 004, …) auto-reaches the test schema with no harness edit, which
+# removes the "forgot to register a migration -> tests go green against a stale schema"
+# drift class (a false green this project explicitly guards against).
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "infra" / "db" / "migrations"
 # pgvector's image = stock Postgres 16 + the `vector` extension preinstalled, which the
 # schema's `CREATE EXTENSION IF NOT EXISTS vector` needs.
 _IMAGE = "pgvector/pgvector:pg16"
@@ -65,7 +65,7 @@ _IMAGE = "pgvector/pgvector:pg16"
 
 @pytest.fixture(scope="session")
 def _pg_url() -> Iterator[str]:
-    schema = _SCHEMA_SQL.read_text(encoding="utf-8")
+    migrations = sorted(_MIGRATIONS_DIR.glob("*.sql"))
 
     # driver="asyncpg" only shapes the URL string get_connection_url() returns;
     # readiness is probed by exec'ing psql inside the container, so no driver is needed.
@@ -73,10 +73,13 @@ def _pg_url() -> Iterator[str]:
 
         async def _apply_schema() -> None:
             # driver=None -> a plain postgresql:// DSN that asyncpg.connect accepts. Its
-            # execute() runs the whole multi-statement schema via the simple-query path.
+            # execute() runs a whole multi-statement file via the simple-query path, so
+            # we apply each migration in order on one connection (002 creates the tables
+            # 003 then ALTERs, so filename order matters).
             conn = await asyncpg.connect(pg.get_connection_url(driver=None))
             try:
-                await conn.execute(schema)
+                for sql_file in migrations:
+                    await conn.execute(sql_file.read_text(encoding="utf-8"))
             finally:
                 await conn.close()
 
