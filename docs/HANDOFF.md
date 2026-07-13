@@ -1,13 +1,17 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-13 (end of session). **Phase 1 is DONE**; **Phase 2 retrieval is
-underway — Q1 (retrieval indexes) and Q2 (naive semantic search) are both complete, verified &
-committed.** Q1 (`f53a596`) switched on the HNSW vector index + a generated `tsv tsvector` column
-(+ GIN); Q2 adds the new `app/retrieve/` package — `search_semantic` returns `list[ScoredChunk]`
-ordered by cosine, owner-filtered, under the `hnsw.ef_search` recall knob. Suite = **42 pass + 2
-deselected (live)** (was 38). Working tree is **clean**; `main` is at the **Phase 2 Q2** commit,
-in sync with `origin/main`. **Next starts at Q3** (`app/retrieve/retrieve.py` — query-string embed
-→ end-to-end retrieve). The approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`._
+_Last updated: 2026-07-14 (end of session). **Phase 1 is DONE**; **Phase 2 retrieval is
+underway — Q1, Q2, and now Q3 are all complete & verified.** Q1 (`f53a596`) switched on the HNSW
+vector index + a generated `tsv tsvector` column (+ GIN); Q2 (`8efed87`) added the `app/retrieve/`
+package — `search_semantic` returns `list[ScoredChunk]` ordered by cosine. **Q3 is the first
+end-to-end read:** new `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id) ->
+RetrievalResult` wraps the query in the RETRIEVAL_QUERY role, owns its own `SessionLocal`, and calls
+`search_semantic`; `RetrievalResult` (query/chunks/`timings_ms`) lands beside `ScoredChunk` in the
+shared `types.py`; `Settings.retrieval_k=10` is new; the `explain-retrieval` skill is wired to a new
+`app/retrieve/explain.py` CLI. Suite = **46 pass + 2 deselected (live), 0 skip** (was 42). **Q3 is
+green but NOT yet committed** — `main` is still at the Q2 commit (`8efed87`, latest `557d71e`); the
+Q3 files sit in the working tree awaiting a `Phase 2 Q3` commit. **Next starts at Q4** (retrieval
+eval baseline — golden set + hit@k / MRR). The approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`._
 
 _This file keeps only **what's live + what's next**. Settled detail lives in the code,
 `docs/PROGRESS.md` (layer-by-layer % tracker), and auto-memory (`phase1-ingestion.md`,
@@ -40,12 +44,12 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
   writing (the superseded run writes zero chunks). Redis is **broker-only** — no result
   backend; `documents.status` stays the single source of truth. See "Seams" + memory
   `phase1-ingestion`.
-- **Phase 2 retrieval — IN PROGRESS. Q1 + Q2 done (2026-07-13), next = Q3.** The query pipeline
-  reads M7's embedded chunks — embed query (`as_retrieval_query`, already built) → hybrid pgvector +
-  full-text → RRF → cross-encoder rerank → generate. Full milestone breakdown (Q1–Q10) approved in
-  **`docs/PHASE2-PLAN.md`**. Locked decisions: **eval is woven** (retrieval hit@k/MRR after Q3, full
-  RAGAS after generation); **LangGraph wrapped later** (plain async functions first, a Phase-2.5
-  refactor); **reranker provider decided at Q7**; **Phase 2 scope = a working `POST /ask`** —
+- **Phase 2 retrieval — IN PROGRESS. Q1 + Q2 + Q3 done (Q3 2026-07-14), next = Q4.** The query
+  pipeline reads M7's embedded chunks — embed query (`as_retrieval_query`, already built) → hybrid
+  pgvector + full-text → RRF → cross-encoder rerank → generate. Full milestone breakdown (Q1–Q10)
+  approved in **`docs/PHASE2-PLAN.md`**. Locked decisions: **eval is woven** (retrieval hit@k/MRR at
+  Q4, full RAGAS after generation); **LangGraph wrapped later** (plain async functions first, a
+  Phase-2.5 refactor); **reranker provider decided at Q7**; **Phase 2 scope = a working `POST /ask`** —
   LangGraph, Guardrails, streaming are Phase 2.5.
   - **Q1 (retrieval indexes) COMPLETE & committed (`f53a596`).** Append-only
     `infra/db/migrations/003_retrieval_indexes.sql`: `idx_chunks_embedding_hnsw` (HNSW,
@@ -65,11 +69,22 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
     (generalizes to role/clearance later; deferred to auth). New config
     `retrieval_hnsw_ef_search=40`. Test-first `test_semantic.py` (4 tests: order / score direction /
     `k` truncation / owner filter) + teaching note `docs/learning/Q2-semantic-search.md`. Suite 42+2.
-  - **Q3 is next:** `app/retrieve/retrieve.py` — `retrieve(query: str, *, k) -> RetrievalResult`,
-    the first end-to-end retrieve. Embeds the query STRING via the existing seam
-    `embed_texts([as_retrieval_query(q)])[0]`, calls `search_semantic`, returns a frozen
-    `RetrievalResult` (query, chunks, `timings_ms`). Module seams: `SessionLocal`, `embed_texts`,
-    `as_retrieval_query`, `search_semantic`. Wires the semantic stage of `explain-retrieval`.
+  - **Q3 (retrieval orchestrator + query embedding) COMPLETE & verified — NOT yet committed.**
+    New `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id=DEV_OWNER_ID) ->
+    RetrievalResult`, the first end-to-end read: embeds the query STRING via the existing seam
+    `embed_texts([as_retrieval_query(q)])[0]` (RETRIEVAL_QUERY role — a text prefix, not a
+    `task_type`), owns its own `SessionLocal` (the `orchestrate.py` pattern), calls the built
+    `search_semantic`, returns a frozen **`RetrievalResult`** (`query`, `chunks`, `timings_ms`)
+    now living beside `ScoredChunk` in the shared `types.py`. Collaborators are module-level
+    monkeypatch seams (`SessionLocal`, `embed_texts`, `as_retrieval_query`, `search_semantic`).
+    `k=None` resolves to new **`Settings.retrieval_k=10`** inside the fn. **`explain-retrieval`
+    wired:** new `app/retrieve/explain.py` CLI (`python -m app.retrieve.explain "<query>"`) drives
+    the real `retrieve()` and prints query → role-wrapped string → embedding → semantic candidates
+    → timings; `SKILL.md` updated. Test-first `test_retrieve.py` (4 tests: query-role wrapping /
+    end-to-end order / `k` truncation / result shape+timings) + note `docs/learning/Q3-query-embedding.md`.
+    Suite **46+2**; a live trace ran against the dev DB. **Awaiting a `Phase 2 Q3` commit.**
+  - **Q4 is next:** the retrieval eval baseline — a `/eval` package, `golden.jsonl`, and hit@k / MRR
+    over `retrieve()` (woven eval begins). See `docs/PHASE2-PLAN.md`.
 - **Test-first & immutable is a hard rule:** write the failing test first; once written a
   test is immutable — fix the code, never the test; if the spec is wrong, stop and ask.
   Full text in `CLAUDE.md`; memory `testing-test-first-immutable`.
@@ -134,9 +149,10 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
   API** in `app/api/documents.py` (`POST /documents`, `GET /documents/{id}`), mounted in
   `app/main.py`. `app/db.py` (SQLAlchemy 2.x + asyncpg), `app/config.py`, `app/models.py`
   (`Document` + `Chunk`), `app/storage/` (M1 seam), `app/ingest/` (`parse` M2, `chunk` M3,
-  `embed` M4, `write` M5, `orchestrate` M6, `inspect` the `/ingest-inspect` CLI), the new
-  **`app/retrieve/`** package (Q2: `types.py` = shared `ScoredChunk`; `semantic.py` =
-  `search_semantic`), and **`app/worker.py`** — the Celery app (`orchestrate_task` bridges the
+  `embed` M4, `write` M5, `orchestrate` M6, `inspect` the `/ingest-inspect` CLI), the
+  **`app/retrieve/`** package (`types.py` = shared `ScoredChunk` + `RetrievalResult`; `semantic.py`
+  = `search_semantic` (Q2); `retrieve.py` = `retrieve()` orchestrator (Q3); `explain.py` = the
+  `explain-retrieval` CLI (Q3)), and **`app/worker.py`** — the Celery app (`orchestrate_task` bridges the
   sync task to the
   async `orchestrate` via `asyncio.run`; `reap_stuck_documents` is the Beat reaper). Deps:
   `unstructured[md,pdf]==0.23.1`, `pgvector`, `google-genai==2.10.0`,
@@ -146,18 +162,23 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
   `session_factory`); as of Q1 it **globs & applies every `infra/db/migrations/*.sql`** in order
   (was hardcoded to `002`), so the test schema matches what `apply-migrations.ps1` builds.
 - **`/docs`** — decisions/notes; `PROGRESS.md` (layer tracker), `PHASE2-PLAN.md` (approved Q1–Q10),
-  and **`docs/learning/`** (per-milestone teaching notes; holds `Q1-indexes.md` + `Q2-semantic-search.md`).
+  and **`docs/learning/`** (per-milestone teaching notes; holds `Q1-indexes.md`,
+  `Q2-semantic-search.md`, `Q3-query-embedding.md`).
 - **`/frontend`** — Next.js (App Router, TS, Tailwind v4); fetches `/health/db`, builds clean.
 - **Tooling** — `dev.ps1` / `stop.ps1`; `README.md` (GitHub front page); `.gitignore`
   hardened (`backend/.env` git-ignored).
 
 ## Git state
 
-- Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **`main` is at the
-  Phase 2 Q2 commit, in sync with `origin/main`** — working tree clean; everything through Q2 is
-  committed & pushed. Recent: `729e651` (M8 async layer) → `c2994f9` (dev.ps1 Beat-window fix) →
-  **`f53a596` (Phase 2 Q1: retrieval indexes)** → **the Phase 2 Q2 commit (naive semantic
-  search)**. No `Co-Authored-By` trailer (user preference). `ruff check backend` clean.
+- Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **`main` is at
+  `557d71e`** (changelog extraction), in sync with `origin/main`. Recent: `729e651` (M8 async
+  layer) → `c2994f9` (dev.ps1 Beat-window fix) → **`f53a596` (Phase 2 Q1: retrieval indexes)** →
+  **`8efed87` (Phase 2 Q2: naive semantic search)** → `557d71e` (changelog extraction).
+  **Q3 is green but NOT yet committed** — the working tree holds `app/retrieve/retrieve.py` +
+  `explain.py`, the `RetrievalResult`/`retrieval_k`/`explain-retrieval SKILL` edits,
+  `test_retrieve.py`, `docs/learning/Q3-query-embedding.md`, and these `PROGRESS.md`/`HANDOFF.md`
+  refreshes; next commit = `Phase 2 Q3`. No `Co-Authored-By` trailer (user preference).
+  `ruff check backend` clean.
 - **Git-ignored, never committed:** `.vscode/settings.json` (SQLTools connection);
   `backend/celerybeat-schedule*` (Beat's local schedule DB).
 - **The `Proactive Autoscaling.pdf` fixture — resolved.** The immutable
@@ -231,25 +252,25 @@ _Full milestone shapes + rationale + Windows/Unstructured gotchas are in memory
 
 ## Suggested first moves next session
 
-0. **Start Q3** — the first end-to-end retrieve (Q1 + Q2 are committed & pushed). New
-   `app/retrieve/retrieve.py` `retrieve(query: str, *, k) -> RetrievalResult`: embed the query
-   STRING via the existing seam `embed_texts([as_retrieval_query(q)])[0]` (role is a text prefix,
-   each input its own `types.Content` — the 2026-07-07 batch fix), call the built `search_semantic`,
-   return a frozen `RetrievalResult` (query, chunks, `timings_ms`). Collaborators as module-level
-   monkeypatch seams (`SessionLocal`, `embed_texts`, `as_retrieval_query`, `search_semantic`), the
-   `orchestrate.py`/`documents.py` pattern. Test-first (`test_retrieve.py`: fake `embed_texts`
-   records its input → assert the query was wrapped with `as_retrieval_query`; real pgvector search
-   over seeded chunks returns expected order). Then wire the semantic stage of `explain-retrieval`.
-1. **Phase 2 mindset:** each milestone ships test-first code **plus** a teaching note
-   `docs/learning/Qx-*.md` (Q1's is `Q1-indexes.md`); fill the `explain-retrieval` / `eval-run`
-   skills as their stages land (still scaffolds). Slow down and teach — this is the RAG core.
-2. **Reaper still unverified live** (the M8 smoke test proved the happy path, not the reaper):
+0. **Commit Q3 first.** It's green in the working tree but uncommitted — stage the Q3 files
+   (`app/retrieve/retrieve.py` + `explain.py`, the `types.py`/`config.py`/`explain-retrieval`
+   SKILL edits, `test_retrieve.py`, `docs/learning/Q3-query-embedding.md`, and these doc refreshes)
+   and land a `Phase 2 Q3` commit before starting new work, so `main` moves off the Q2 commit.
+1. **Then start Q4** — the retrieval eval baseline (woven eval begins). New `/eval` package +
+   `golden.jsonl` (a small hand-built set of query → expected-chunk/doc), scored with **hit@k** and
+   **MRR** (mean reciprocal rank) over `retrieve()`. This is where the `eval-run` skill scaffold
+   gets filled and `RetrievalResult.timings_ms` starts feeding a report. See `docs/PHASE2-PLAN.md`
+   for the approved Q4 shape.
+2. **Phase 2 mindset:** each milestone ships test-first code **plus** a teaching note
+   `docs/learning/Qx-*.md` (Q3's is `Q3-query-embedding.md`); fill the `explain-retrieval` /
+   `eval-run` skills as their stages land. Slow down and teach — this is the RAG core.
+3. **Reaper still unverified live** (the M8 smoke test proved the happy path, not the reaper):
    with Beat in its own `dev.ps1` window, shorten `ingest_stuck_after_seconds`, leave a
    `processing` row with an old `updated_at`, and watch Beat requeue it + `attempt` increment.
    Optional — the fence logic is under `test_worker.py`, so this is a live-confidence check.
-3. **Optional cleanup:** a formatting-only commit for the `test_parse.py` `black` debt (see
+4. **Optional cleanup:** a formatting-only commit for the `test_parse.py` `black` debt (see
    Open items).
-4. **Naive-first but still test-first** — the red/green net exists before the naive code.
+5. **Naive-first but still test-first** — the red/green net exists before the naive code.
 
 To re-run the smoke test: `.\dev.ps1`, then (note **`curl.exe`**, not `curl`):
 `curl.exe -F "file=@backend/tests/fixtures/rag_test_document.md" http://localhost:8000/documents`

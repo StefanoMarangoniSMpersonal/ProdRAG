@@ -5,16 +5,18 @@
 > Companion to `docs/CHANGELOG.md` (append-only history), `docs/HANDOFF.md` (session
 > state), and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-13 — **Phase 2 retrieval: Q1 + Q2 done, verified & committed.** Q1
-> (`f53a596`) switched on the **HNSW** vector index (`vector_cosine_ops`) + a generated
-> **`tsv tsvector`** column and its **GIN** index (applied to existing dev rows with no re-ingest).
-> **Q2 adds the first retrieval CODE:** a new `app/retrieve/` package — `search_semantic(session,
-> query_embedding, *, k, owner_id) -> list[ScoredChunk]` orders by cosine
-> (`Chunk.embedding.cosine_distance`), owner-filtered, under the `hnsw.ef_search` recall knob
-> (issued per query via `set_config` — plain `SET` rejects a bound param). `ScoredChunk` (shared
-> `types.py`) scores **cosine similarity** (`1 - distance`, higher = better); config gained
-> `retrieval_hnsw_ef_search=40`. Test-first (`test_semantic.py`, 4 tests) + teaching note
-> (`docs/learning/Q2-semantic-search.md`). Suite = **42 pass + 2 deselected (live)** (was 38)._
+> _Last updated: 2026-07-14 — **Phase 2 retrieval: Q1 + Q2 + Q3 done & verified** (Q1/Q2
+> committed; Q3 green in the working tree, awaiting commit). **Q3 is the first end-to-end
+> read:** new `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id) ->
+> RetrievalResult` wraps the query in the **RETRIEVAL_QUERY** role
+> (`embed_texts([as_retrieval_query(q)])[0]` — asymmetry is a text prefix, not a `task_type`),
+> owns its own session (`SessionLocal`), and calls Q2's `search_semantic`. New frozen
+> **`RetrievalResult`** (`query`, `chunks`, `timings_ms`) beside `ScoredChunk` in the shared
+> `types.py`; config gained **`retrieval_k=10`** (resolved inside the fn, not a literal
+> default). The **`explain-retrieval`** skill is wired to a new `app/retrieve/explain.py` CLI
+> that drives the real `retrieve()`. Test-first (`test_retrieve.py`, 4 tests) + teaching note
+> (`docs/learning/Q3-query-embedding.md`). Suite = **46 pass + 2 deselected (live), 0 skip**
+> (was 42)._
 
 ## How to read the scores
 
@@ -36,14 +38,14 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
-| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~10% | **~24%** |
+| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~15% | **~28%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~65% | **~76%** |
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
 
-**Weighted overall: ~25–27% (code-only) · ~42% (code + design).**
+**Weighted overall: ~26–28% (code-only) · ~43% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -68,12 +70,15 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    the worker still uses a direct DB connection (the Supavisor pooled-worker URL is the
    documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
-5. **Query pipeline** — **Phase 2 in progress (Q1 + Q2 done).** Q1 landed the *storage substrate*
-   (HNSW + `tsv`, see Layer 6); **Q2 is the first query CODE** — the new `app/retrieve/` package
-   (`types.py` = shared `ScoredChunk`; `semantic.py` = `search_semantic`, naive cosine vector
-   search, owner-filtered, `ef_search` knob wired). Entire pipeline shape is locked (hybrid → RRF
-   → cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`. Next =
-   **Q3** (`app/retrieve/retrieve.py` — query-string embed + orchestrator → first end-to-end retrieve).
+5. **Query pipeline** — **Phase 2 in progress (Q1 + Q2 + Q3 done).** Q1 landed the *storage
+   substrate* (HNSW + `tsv`, see Layer 6); Q2 was the first query CODE (`search_semantic`, naive
+   cosine vector search over a query *vector*); **Q3 is the first end-to-end read** —
+   `app/retrieve/retrieve.py` `retrieve(query: str) → RetrievalResult` turns a query *string* into
+   ranked chunks (embeds it in the RETRIEVAL_QUERY role, owns `SessionLocal`, calls `search_semantic`,
+   carries per-stage timings), and the `app/retrieve/explain.py` CLI now backs the `explain-retrieval`
+   skill (proven live against the dev DB). Entire pipeline shape is locked (hybrid → RRF →
+   cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`. Next =
+   **Q4** (retrieval eval baseline — golden set + hit@k / MRR).
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -122,7 +127,7 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 |-----------|------|--------|
 | Q1 | Schema switch-on: HNSW index + generated `tsv tsvector` + GIN index (migration `003`; `Chunk.tsv` mapped; conftest globs all migrations) | ✅ complete & verified, committed `f53a596` — `test_retrieve_schema.py`; note `docs/learning/Q1-indexes.md`; dev DB migrated in place, no re-ingest |
 | Q2 | Semantic retrieval — `app/retrieve/semantic.py` `search_semantic → list[ScoredChunk]`, cosine order, `ef_search` knob | ✅ complete & verified, committed — new `app/retrieve/` pkg (`types.py` shared `ScoredChunk`; `semantic.py`); score = cosine similarity (`1 − dist`); `ef_search` via `set_config`; owner = visibility seam; `test_semantic.py` (4 tests) + `docs/learning/Q2-semantic-search.md`; suite 42+2 |
-| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ⬜ next |
+| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ✅ complete & verified — `app/retrieve/retrieve.py` `retrieve(query, *, k=None, owner_id)` wraps query in RETRIEVAL_QUERY role → owns `SessionLocal` → `search_semantic`; `RetrievalResult` (query/chunks/timings) in shared `types.py`; `Settings.retrieval_k=10`; module seams; `explain.py` CLI backs the skill; `test_retrieve.py` (4 tests) + note `Q3-query-embedding.md`; suite 46+2; live trace ran on dev DB. Not yet committed |
 | Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ⬜ |
 | Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ⬜ |
 | Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ⬜ |
@@ -149,12 +154,13 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **M0–M8 are committed & pushed** — `main` at `729e651` (the async layer / M8), on top of
-  `8fa0bd5` (housekeeping: `backend/pyproject.toml` `fastapi.File` B008 exemption +
-  `infra/db/explore.sql`, so `ruff check backend` is clean). **This session's tooling/doc
-  commit** lands on top: the `dev.ps1` Beat-window fix, `.gitignore` `celerybeat-schedule*`,
-  and these doc refreshes — no app code, no test change. (`.vscode/settings.json`, the
-  SQLTools connection, is git-ignored and won't be committed.)
+- **M0–M8 + Phase 2 Q1 + Q2 are committed & pushed** — `main` is at the **Phase 2 Q2**
+  commit (`8efed87`), on top of `f53a596` (Q1 indexes) → `c2994f9` (dev.ps1 Beat window) →
+  `729e651` (M8 async layer). The latest commit is `557d71e` (changelog extraction). **Q3 is
+  green in the working tree but not yet committed** — `app/retrieve/retrieve.py` +
+  `explain.py`, `RetrievalResult` in `types.py`, `Settings.retrieval_k`, `test_retrieve.py`,
+  the `explain-retrieval` SKILL wiring, and `docs/learning/Q3-query-embedding.md`, plus these
+  doc refreshes. (`.vscode/settings.json`, the SQLTools connection, is git-ignored.)
 
 ## Changelog
 

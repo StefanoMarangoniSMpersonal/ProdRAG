@@ -5,6 +5,38 @@
 > in `docs/PROGRESS.md`; live session state in `docs/HANDOFF.md`; the constitution in
 > `CLAUDE.md`. Add an entry here whenever a milestone lands.
 
+- **2026-07-14 (Phase 2 — Q3: retrieval orchestrator + query embedding)** — the first
+  *end-to-end* read: one call that turns a query **string** into ranked chunks. New
+  **`app/retrieve/retrieve.py`** **`retrieve(query: str, *, k=None, owner_id=DEV_OWNER_ID)
+  -> RetrievalResult`**: wraps the query in the **RETRIEVAL_QUERY** role
+  (`embed_texts([as_retrieval_query(query)])[0]` — the query/document asymmetry is a text
+  *prefix*, not a `task_type`, since gemini-embedding-2 dropped that field), then owns its
+  own session (`SessionLocal`) and calls Q2's `search_semantic`. It's the seam every later
+  stage (lexical Q5, RRF Q6, rerank Q7) slots behind without changing the signature.
+  **New frozen `RetrievalResult`** (`query`, `chunks`, `timings_ms`) lives beside
+  `ScoredChunk` in the shared **`app/retrieve/types.py`** (one canonical type for `/ask` +
+  eval, no import cycle); it carries per-stage timings because retrieval must never run
+  silently (the "eval is a substrate" rule, same as `IngestResult`). **`k` defaults to new
+  `Settings.retrieval_k=10`** (resolved from config inside the fn, not a literal default) —
+  today the final result size, later the candidate pool rerank truncates to 5–10.
+  **Collaborators are module-level seams** (`SessionLocal`, `embed_texts`,
+  `as_retrieval_query`, `search_semantic`) so tests monkeypatch this module's copy — the
+  `orchestrate.py` pattern. **`explain-retrieval` skill wired:** new
+  **`app/retrieve/explain.py`** CLI (`python -m app.retrieve.explain "<query>"`), the
+  retrieval analogue of `app/ingest/inspect.py` — drives the real `retrieve()` and prints
+  query → role-wrapped string → embedding (model/dims/unit-norm) → semantic candidates →
+  timings, with later stages listed "not yet wired" so its shape stays stable; `SKILL.md`
+  updated to drive it. **Test-first, 4 immutable tests** (`test_retrieve.py`, committing
+  `session_factory`, `_axis_vec`): a fake `embed_texts` records its input so the query-role
+  wrapping is asserted on the *actual embedded string*; real pgvector then orders/`k`-
+  truncates known-axis chunks end to end; result shape + timing keys + similarity direction
+  pinned. Teaching note **`docs/learning/Q3-query-embedding.md`**. **Verified:** suite
+  **46 pass + 2 deselected (live), 0 skip** (was 42); ruff + black clean; and a **live
+  end-to-end** trace ran against the dev DB (`prodrag-postgres`) — query → unit-length 768-d
+  query-role embedding → HNSW search → 5 scored chunks + timings. (The dev corpus is
+  `rag_test_document.md` ingested twice, so results come in duplicate doc pairs and score
+  only ~0.56 on an off-topic query — a data gap the tracer makes visible, not a bug.)
+  **Not yet committed — user reviews first.**
 - **2026-07-13 (Phase 2 — Q2: naive semantic search)** — the first retrieval *code*: a new
   **`app/retrieve/`** package reading the HNSW index Q1 switched on. `app/retrieve/semantic.py`
   **`search_semantic(session, query_embedding, *, k, owner_id=DEV_OWNER_ID) -> list[ScoredChunk]`**:

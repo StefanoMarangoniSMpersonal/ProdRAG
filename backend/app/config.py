@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     # Override via RETRIEVAL_HNSW_EF_SEARCH.
     retrieval_hnsw_ef_search: int = 40
 
+    # Default number of chunks retrieve() returns (Q3). Today it's the final result
+    # size; once cross-encoder rerank lands (Q7) it becomes the candidate-pool size that
+    # rerank truncates down to 5-10. Overridable per call and via RETRIEVAL_K.
+    retrieval_k: int = 10
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

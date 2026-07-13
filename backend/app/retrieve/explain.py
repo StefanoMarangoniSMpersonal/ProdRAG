@@ -1,0 +1,120 @@
+"""Live tracer for the retrieval pipeline — the code `/explain-retrieval` drives.
+
+Run one query through the REAL retrieve path and print each stage's output, so retrieval
+behaviour can be judged by eye. Retrieval is the part of RAG hardest to reason about
+blind; this is the window into it. Read-only: it queries, it never writes.
+
+Usage:
+    python -m app.retrieve.explain "<query>" [--k N] [--preview N]
+
+It drives the project's own `retrieve()` (it does NOT reimplement retrieval), so as
+later stages land inside `retrieve` — lexical (Q5), RRF fusion (Q6), cross-encoder
+rerank (Q7), grounded generation (Q8) — this tracer shows them with no rework. Today
+only the semantic stage is wired, so that's what prints; the rest are listed as "not yet
+wired" to keep the output shape stable as the pipeline grows.
+
+Note on the embedding line: `retrieve()` embeds the query internally (and reports it as
+`embed_ms`). To *display* the query vector's shape and confirm it's unit-length, this
+tracer embeds the wrapped query once more itself — a deliberate, clearly-labelled extra
+call in this dev-only tool, so the "what got embedded" step is visible rather than
+hidden inside `retrieve`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import math
+import sys
+
+from app.config import get_settings
+from app.ingest.embed import as_retrieval_query, embed_texts
+from app.retrieve.retrieve import retrieve
+
+_PREVIEW_DEFAULT = 160
+
+
+def _preview(text: str, limit: int) -> str:
+    """One-line, whitespace-collapsed, truncated preview with a visible boundary.
+
+    ASCII-only on purpose (same as ingest/inspect.py): the Windows console defaults to
+    cp1252 and would crash on fancy glyphs with a UnicodeEncodeError. Plain quotes make
+    chunk boundaries clear everywhere.
+    """
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return f'"{collapsed}"'
+    return f'"{collapsed[:limit]}..."  (+{len(collapsed) - limit} chars)'
+
+
+async def _run(query: str, k: int, preview: int) -> int:
+    settings = get_settings()
+
+    # --- Stage 1: query processing ------------------------------------------------
+    # The role-wrapped string is what actually gets embedded (RETRIEVAL_QUERY role) --
+    # the asymmetry with the document role is what makes query<->passage similarity
+    # meaningful. Show it, then embed it once to confirm the vector's shape/norm.
+    wrapped = as_retrieval_query(query)
+    print(f'Query: "{query}"')
+    print(f"  role-wrapped : {wrapped!r}")
+
+    vec = (await embed_texts([wrapped]))[0]
+    norm = math.sqrt(sum(x * x for x in vec))
+    head = ", ".join(f"{x:+.4f}" for x in vec[:4])
+    print(
+        f"  embedding    : model={settings.embedding_model} dims={len(vec)} "
+        f"|v|={norm:.4f}  head=[{head}, ...]"
+    )
+
+    # --- Stage 2: semantic candidates ---------------------------------------------
+    # Drive the real retrieve() -- this is the pipeline, not a re-implementation.
+    result = await retrieve(query, k=k)
+    print(
+        f"\nSemantic candidates (k={k}, ef_search={settings.retrieval_hnsw_ef_search}):"
+    )
+    if not result.chunks:
+        print("  (no chunks -- is anything ingested for this owner?)")
+    for rank, sc in enumerate(result.chunks):
+        ch = sc.chunk
+        page = f"p{ch.page_number}" if ch.page_number is not None else "p?"
+        etype = ch.element_type or "-"
+        print(
+            f"[{rank:>3}] score={sc.score:+.4f} doc={str(ch.document_id)[:8]} "
+            f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
+        )
+
+    # --- timings + not-yet-wired stages -------------------------------------------
+    print("\n" + "-" * 60)
+    print(f"timings_ms : {result.timings_ms}")
+    print(
+        "later stages: lexical (Q5) / RRF fusion (Q6) / rerank (Q7) / "
+        "generate (Q8) -- not yet wired"
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    settings = get_settings()
+    parser = argparse.ArgumentParser(
+        prog="python -m app.retrieve.explain",
+        description="Trace one query through the retrieval pipeline (read-only).",
+    )
+    parser.add_argument("query", help="the query string to retrieve for")
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=settings.retrieval_k,
+        help=f"number of chunks to retrieve (default: {settings.retrieval_k})",
+    )
+    parser.add_argument(
+        "--preview",
+        type=int,
+        default=_PREVIEW_DEFAULT,
+        help=f"max preview chars per chunk (default: {_PREVIEW_DEFAULT})",
+    )
+    args = parser.parse_args(argv)
+    return asyncio.run(_run(args.query, args.k, args.preview))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
