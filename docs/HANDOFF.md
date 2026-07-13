@@ -124,13 +124,18 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
 - **Two DBs, don't confuse them.** The suite's testcontainers Postgres is **ephemeral**
   (`TRUNCATE`d per test, container destroyed on exit). The **persistent dev DB** is
   `prodrag-postgres` (docker-compose, `localhost:5432`, db/user/pass all `prodrag`, volume
-  `infra_pgdata`) — where a real `POST /documents` lands and what survives restarts. It
-  currently holds **2 `documents` + 32 `chunks`**: the same file (`rag_test_document.md`, same
-  checksum) ingested twice — a 2026-07-10 direct-orchestrate run (`attempt=0`, pre-fence) and
-  the 2026-07-11 M8 Celery smoke test (`attempt=1`). (No "Aurelia" row — an earlier handoff note
-  said so; it was stale.) Two rows for identical content is expected: **upload dedup is deferred**,
-  so each upload = a new doc id (the `checksum` column exists to add skip-if-unchanged later).
-  Both are `ready`, 16 chunks each, and gained the Q1 `tsv`/HNSW index in place.
+  `infra_pgdata`) — where a real `POST /documents` lands and what survives restarts.
+- **✅ Eval-corpus de-contamination (2026-07-14) — DB purged + cleanly re-ingested.** The
+  fixture `rag_test_document.md` used to embed the "Golden Question Set" (answer key) after §18;
+  ingesting it put the oracle into the retrievable store (**test-set leakage**). The fixture is
+  now **stripped to §1–18** (golden set extracted to `eval/golden_source.md`, never ingested).
+  The old contaminated content (2 `documents` + 32 `chunks`, the same pre-strip file ingested
+  twice — a 2026-07-10 direct-orchestrate run + a 2026-07-11 M8 Celery smoke; two rows for
+  identical content is expected since **upload dedup is deferred**) was dropped via
+  `DELETE FROM documents WHERE filename='rag_test_document.md';` (cascaded to chunks) and the
+  stripped fixture re-ingested once through the curl flow. The dev DB now holds **1 clean
+  `documents` row + 13 `chunks`**, with **0** chunks containing "Golden Question Set" /
+  "Expected Answer" — verified. The store is safe for retrieval eval (Q4).
 - **Inspecting the dev DB.** CLI: `docker exec -it prodrag-postgres psql -U prodrag -d
   prodrag`. GUI: **VS Code SQLTools** + PostgreSQL driver are installed (connection in
   git-ignored `.vscode/settings.json`). Ready browsing queries: **`infra/db/explore.sql`**

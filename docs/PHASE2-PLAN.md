@@ -115,6 +115,9 @@ ingestion **M0–M8** series; numbering is adjustable.
   `chunk_id`s), `eval/run.py` (`python -m eval.run --golden eval/golden.jsonl --out eval/results/`),
   retrieval metrics **hit@k** and **MRR**, results saved under `eval/results/` for baseline
   comparison. Wire `eval-run` skill (retrieval mode). Record the **semantic-only baseline**.
+  The golden Q&A source is already staged (de-contaminated) at **`eval/golden_source.md`** — Q4 turns
+  its 15 questions into `golden.jsonl` by mapping each to the relevant `chunk_id`s of the freshly
+  re-ingested clean corpus; the "Expected Answer" column is held for RAGAS reference answers at Q9.
 - **Teaching note** (`Q4-retrieval-eval.md`): what hit@k and MRR measure and their blind spots; how
   to build a golden set (and how a bad golden set lies to you); the baseline→delta loop that Q5–Q7
   are measured by.
@@ -201,8 +204,9 @@ semantic cache · query rewrite / HyDE · frontend chat + upload UI.
 - **Offline suite:** `backend\.venv\Scripts\python.exe -m pytest` from repo root — every milestone
   lands red-first then green; suite stays 0-skip (Docker up for the pgvector testcontainer).
 - **Live retrieval, interactively:** the `explain-retrieval` skill on a real query against the **dev
-  DB** (`prodrag-postgres`, already holds 16 Aurelia chunks) — watch each stage's output as stages
-  come online (semantic at Q3, +lexical/RRF at Q5–Q6, +rerank at Q7, +answer at Q8).
+  DB** (`prodrag-postgres`, holds one clean `rag_test_document.md` — 1 doc / 13 chunks — after the
+  2026-07-14 corpus de-contamination + re-ingest — see HANDOFF "Two DBs") — watch each stage's output as stages come
+  online (semantic at Q3, +lexical/RRF at Q5–Q6, +rerank at Q7, +answer at Q8).
 - **Quality, quantitatively:** `python -m eval.run --golden eval/golden.jsonl --out eval/results/`
   after Q4 (hit@k/MRR baseline) and re-run after Q5/Q6/Q7; RAGAS after Q9. Each retrieval milestone's
   teaching note records its eval delta.
