@@ -4,16 +4,16 @@
 > changelog as milestones land — don't re-derive from scratch each time.
 > Companion to `docs/HANDOFF.md` (session state) and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-13 — **Phase 2 has started: Q1 (retrieval indexes) is done & verified,
-> not yet committed.** A new append-only `003_retrieval_indexes.sql` switches on the **HNSW**
-> vector index (`vector_cosine_ops`) + a generated **`tsv tsvector`** column and its **GIN**
-> index; `Chunk.tsv` is mapped read-only; the testcontainers harness now **globs all migrations**
-> (was hardcoded to `002`). Both objects derive from stored data → applied to the existing dev
-> rows **with no re-ingest** (verified: row count unchanged, `tsv` auto-populated, EXPLAIN shows
-> the HNSW index is valid). Test-first (`test_retrieve_schema.py`) + teaching note
-> (`docs/learning/Q1-indexes.md`). Suite = **38 pass + 2 deselected (live)** (was 35). Previously
-> (2026-07-11): the async layer was proven live end to end (HTTP-through-worker smoke test) and a
-> `dev.ps1` Windows Beat-window fix landed (`c2994f9`)._
+> _Last updated: 2026-07-13 — **Phase 2 retrieval: Q1 + Q2 done, verified & committed.** Q1
+> (`f53a596`) switched on the **HNSW** vector index (`vector_cosine_ops`) + a generated
+> **`tsv tsvector`** column and its **GIN** index (applied to existing dev rows with no re-ingest).
+> **Q2 adds the first retrieval CODE:** a new `app/retrieve/` package — `search_semantic(session,
+> query_embedding, *, k, owner_id) -> list[ScoredChunk]` orders by cosine
+> (`Chunk.embedding.cosine_distance`), owner-filtered, under the `hnsw.ef_search` recall knob
+> (issued per query via `set_config` — plain `SET` rejects a bound param). `ScoredChunk` (shared
+> `types.py`) scores **cosine similarity** (`1 - distance`, higher = better); config gained
+> `retrieval_hnsw_ef_search=40`. Test-first (`test_semantic.py`, 4 tests) + teaching note
+> (`docs/learning/Q2-semantic-search.md`). Suite = **42 pass + 2 deselected (live)** (was 38)._
 
 ## How to read the scores
 
@@ -35,14 +35,14 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
-| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~3% | **~18%** |
+| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~10% | **~24%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~65% | **~76%** |
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
 
-**Weighted overall: ~24–26% (code-only) · ~41% (code + design).**
+**Weighted overall: ~25–27% (code-only) · ~42% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -67,10 +67,12 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    the worker still uses a direct DB connection (the Supavisor pooled-worker URL is the
    documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
-5. **Query pipeline** — **Phase 2 started.** Q1 landed the *storage substrate* (HNSW + `tsv`,
-   see Layer 6), but no query *code* yet — `app/retrieve/` doesn't exist. Entire pipeline shape
-   is locked (hybrid → RRF → cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is
-   `docs/PHASE2-PLAN.md`. Next = **Q2** (`app/retrieve/semantic.py`, naive vector search).
+5. **Query pipeline** — **Phase 2 in progress (Q1 + Q2 done).** Q1 landed the *storage substrate*
+   (HNSW + `tsv`, see Layer 6); **Q2 is the first query CODE** — the new `app/retrieve/` package
+   (`types.py` = shared `ScoredChunk`; `semantic.py` = `search_semantic`, naive cosine vector
+   search, owner-filtered, `ef_search` knob wired). Entire pipeline shape is locked (hybrid → RRF
+   → cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`. Next =
+   **Q3** (`app/retrieve/retrieve.py` — query-string embed + orchestrator → first end-to-end retrieve).
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -117,9 +119,9 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 
 | Milestone | What | Status |
 |-----------|------|--------|
-| Q1 | Schema switch-on: HNSW index + generated `tsv tsvector` + GIN index (migration `003`; `Chunk.tsv` mapped; conftest globs all migrations) | ✅ complete & verified (not yet committed) — `test_retrieve_schema.py`; note `docs/learning/Q1-indexes.md`; dev DB migrated in place, no re-ingest |
-| Q2 | Semantic retrieval — `app/retrieve/semantic.py` `search_semantic → list[ScoredChunk]`, cosine order, `ef_search` knob | ⬜ next |
-| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ⬜ |
+| Q1 | Schema switch-on: HNSW index + generated `tsv tsvector` + GIN index (migration `003`; `Chunk.tsv` mapped; conftest globs all migrations) | ✅ complete & verified, committed `f53a596` — `test_retrieve_schema.py`; note `docs/learning/Q1-indexes.md`; dev DB migrated in place, no re-ingest |
+| Q2 | Semantic retrieval — `app/retrieve/semantic.py` `search_semantic → list[ScoredChunk]`, cosine order, `ef_search` knob | ✅ complete & verified, committed — new `app/retrieve/` pkg (`types.py` shared `ScoredChunk`; `semantic.py`); score = cosine similarity (`1 − dist`); `ef_search` via `set_config`; owner = visibility seam; `test_semantic.py` (4 tests) + `docs/learning/Q2-semantic-search.md`; suite 42+2 |
+| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ⬜ next |
 | Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ⬜ |
 | Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ⬜ |
 | Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ⬜ |
@@ -155,6 +157,30 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 
 ## Changelog
 
+- **2026-07-13 (Phase 2 — Q2: naive semantic search)** — the first retrieval *code*: a new
+  **`app/retrieve/`** package reading the HNSW index Q1 switched on. `app/retrieve/semantic.py`
+  **`search_semantic(session, query_embedding, *, k, owner_id=DEV_OWNER_ID) -> list[ScoredChunk]`**:
+  a single `select(Chunk, distance).where(owner).order_by(distance).limit(k)` where `distance =
+  Chunk.embedding.cosine_distance(query_embedding)` (pgvector `<=>`); the one distance expression
+  feeds both the `ORDER BY` and the score so they can't drift. **Three architect decisions locked:**
+  (1) **`ScoredChunk`** (frozen `slots=True` dataclass = `chunk` + `score`) lives in a shared
+  **`app/retrieve/types.py`** so Q5 lexical + Q7 rerank import one canonical type (no per-module
+  class, no import cycle); (2) **score = cosine similarity** = `1 - cosine_distance` (higher = more
+  relevant) so semantic / lexical `ts_rank` / rerank scores all point the same way for RRF/rerank;
+  (3) **`hnsw.ef_search` recall knob wired now** — new config `retrieval_hnsw_ef_search=40`
+  (pgvector's default, so no behavior change), issued per query. **Gotcha:** `SET LOCAL
+  hnsw.ef_search = :ef` does *not* parse — Postgres `SET` takes only a literal — so it's applied
+  via `SELECT set_config('hnsw.ef_search', :ef, true)` (function form, param-safe, transaction-local
+  auto-revert). The **`owner_id` filter is documented as the visibility-predicate seam**: today the
+  future RLS boundary, generalizing to role/clearance (RBAC/ABAC) later by broadening the one
+  predicate + a doc-classification column + a JWT `app_metadata` role claim — additive, no reshape;
+  whole role model deferred to auth (analysis kept in the teaching note). **Test-first, 4 immutable
+  tests** (`test_semantic.py`, committing `session_factory`, local `_axis_vec` helper): ordering by
+  similarity; score direction pinned (near≈1.0, orthogonal≈0.0 — a regression to raw distance goes
+  red); `k` truncates; the owner filter hides another owner's chunk *even when it's the best vector
+  match*. Teaching note **`docs/learning/Q2-semantic-search.md`**. **Verified:** suite **42 pass + 2
+  deselected (live), 0 skip** (was 38); ruff + black clean on all new/modified files. **Committed &
+  pushed.**
 - **2026-07-13 (Phase 2 begins — Q1: retrieval indexes)** — switched on the two DB capabilities
   the query pipeline reads, both derived from already-stored data so they applied to the existing
   dev rows **with no re-ingest**. New append-only **`infra/db/migrations/003_retrieval_indexes.sql`**
@@ -180,7 +206,7 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   place via `apply-migrations.ps1` — row count unchanged (32 chunks / 2 docs), `tsv` populated on all
   32, both indexes present, EXPLAIN shows a Seq Scan naturally (32 rows) but `Index Scan using
   idx_chunks_embedding_hnsw` under `enable_seqscan=off` (index valid; planner picks it as the corpus
-  grows). **Not yet committed — under review.**
+  grows). **Committed & pushed as `f53a596`.**
 - **2026-07-11 (async layer proven live + `dev.ps1` Windows fix)** — ran the **HTTP-through-
   worker smoke test** for the first time — the one seam of M8 never previously exercised (all
   prior live proof was in-process via `test_orchestrate_..._live`, never through a real Celery

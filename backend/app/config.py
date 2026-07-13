@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     ingest_reaper_interval_seconds: int = 120
     ingest_max_processing_attempts: int = 3
 
+    # Retrieval (Q2). hnsw.ef_search is the HNSW recall knob: higher searches more graph
+    # candidates -> better recall, slower. 40 is pgvector's default (no behavior change
+    # from leaving it unset); search_semantic issues it per query via set_config.
+    # Override via RETRIEVAL_HNSW_EF_SEARCH.
+    retrieval_hnsw_ef_search: int = 40
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
