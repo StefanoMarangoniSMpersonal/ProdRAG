@@ -5,18 +5,18 @@
 > Companion to `docs/CHANGELOG.md` (append-only history), `docs/HANDOFF.md` (session
 > state), and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-14 — **Phase 2 retrieval: Q1 + Q2 + Q3 done & verified** (Q1/Q2
-> committed; Q3 green in the working tree, awaiting commit). **Q3 is the first end-to-end
-> read:** new `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id) ->
-> RetrievalResult` wraps the query in the **RETRIEVAL_QUERY** role
-> (`embed_texts([as_retrieval_query(q)])[0]` — asymmetry is a text prefix, not a `task_type`),
-> owns its own session (`SessionLocal`), and calls Q2's `search_semantic`. New frozen
-> **`RetrievalResult`** (`query`, `chunks`, `timings_ms`) beside `ScoredChunk` in the shared
-> `types.py`; config gained **`retrieval_k=10`** (resolved inside the fn, not a literal
-> default). The **`explain-retrieval`** skill is wired to a new `app/retrieve/explain.py` CLI
-> that drives the real `retrieve()`. Test-first (`test_retrieve.py`, 4 tests) + teaching note
-> (`docs/learning/Q3-query-embedding.md`). Suite = **46 pass + 2 deselected (live), 0 skip**
-> (was 42)._
+> _Last updated: 2026-07-16 — **Phase 2 retrieval: Q1–Q4 code done & verified; Q4 live baseline
+> pending.** Q4 is the **eval ruler** every later stage (Q5 lexical, Q6 RRF, Q7 rerank) is measured
+> against — repo-root **`/eval` package**: `metrics.py` (pure hit@k / RR / MRR), `run.py`
+> (`python -m eval.run …` drives the real `retrieve()`, writes a timestamped baseline JSON), and
+> `build_golden.py` (regenerator: expected-answer → chunk_id, source-scoped, re-run after re-ingest —
+> chunk ids churn). Locked: relevance key = generator+chunk_ids; traps → Q8; **corpus-expansion gate
+> SATISFIED** — golden set 15 → **48 Q over 9 docs** (8 new adversarial docs staged under `eval/corpus/`),
+> source is now the 5-column `eval/golden_questions.md`. `pytest.ini` has `pythonpath = . backend`.
+> Test-first: `test_eval_metrics.py` (13, incl. 1 live) + `test_build_golden.py` (5) + note
+> `docs/learning/Q4-retrieval-eval.md`. Offline suite = **63 pass + 3 deselected (live), 0 skip**
+> (was 46+2). Remaining Q4 = manual/live: ingest the 8 corpus docs, build the golden set, record the
+> baseline, then commit._
 
 ## How to read the scores
 
@@ -43,9 +43,9 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
-| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~5% | **~20%** |
+| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~15% | **~28%** |
 
-**Weighted overall: ~26–28% (code-only) · ~43% (code + design).**
+**Weighted overall: ~27–29% (code-only) · ~44% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -70,15 +70,19 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    the worker still uses a direct DB connection (the Supavisor pooled-worker URL is the
    documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
-5. **Query pipeline** — **Phase 2 in progress (Q1 + Q2 + Q3 done).** Q1 landed the *storage
+5. **Query pipeline** — **Phase 2 in progress (Q1–Q4 done; Q4 code green, live baseline pending).** Q1 landed the *storage
    substrate* (HNSW + `tsv`, see Layer 6); Q2 was the first query CODE (`search_semantic`, naive
    cosine vector search over a query *vector*); **Q3 is the first end-to-end read** —
    `app/retrieve/retrieve.py` `retrieve(query: str) → RetrievalResult` turns a query *string* into
    ranked chunks (embeds it in the RETRIEVAL_QUERY role, owns `SessionLocal`, calls `search_semantic`,
    carries per-stage timings), and the `app/retrieve/explain.py` CLI now backs the `explain-retrieval`
    skill (proven live against the dev DB). Entire pipeline shape is locked (hybrid → RRF →
-   cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`. Next =
-   **Q4** (retrieval eval baseline — golden set + hit@k / MRR).
+   cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`. **Q4 landed
+   the eval ruler** (`/eval` package: pure hit@k/MRR metrics + `run.py` harness over the real
+   `retrieve()` + `build_golden.py` regenerator) — the semantic-only baseline every later stage is
+   scored against. The **corpus-expansion gate is satisfied** (golden set 15 → 48 Q over 9 docs; 8 new
+   docs staged under `eval/corpus/`), so the baseline will be trustworthy once the live steps run.
+   Next = record that baseline, then **Q5** (lexical retrieval).
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -98,8 +102,13 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    documented; only enforcement code is missing.
 9. **Deployment / Infra** — local `docker-compose` (Postgres+Redis) + `dev.ps1`/`stop.ps1` are
    real. Fargate is a deliberate one-time learning touch, not yet done (and mostly out of scope).
-10. **Observability & Eval** — logging contract + "eval as substrate" strategy + `.claude` eval
-    skill scaffolds exist; no tracing, no golden set, no wiring.
+10. **Observability & Eval** — **retrieval eval now has code** (Q4): the `/eval` package with pure
+    hit@k/MRR metrics, the `run.py` harness that scores the real `retrieve()` and writes baseline
+    result files, and the source-scoped `build_golden.py`. The golden set exists as source (the
+    5-column `golden_questions.md`, 48 Q + 10 traps) and is turned into `golden.jsonl` by the
+    regenerator; the semantic baseline recording is a manual live step (after ingesting the 8
+    `eval/corpus/` docs). Still missing: RAGAS answer-eval (Q9), tracing (LangSmith/Sentry), the
+    per-query query log (Q10). Logging contract + "eval as substrate" strategy predate this.
 
 ## Ingestion milestones (Layer 4 detail)
 
@@ -127,8 +136,8 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 |-----------|------|--------|
 | Q1 | Schema switch-on: HNSW index + generated `tsv tsvector` + GIN index (migration `003`; `Chunk.tsv` mapped; conftest globs all migrations) | ✅ complete & verified, committed `f53a596` — `test_retrieve_schema.py`; note `docs/learning/Q1-indexes.md`; dev DB migrated in place, no re-ingest |
 | Q2 | Semantic retrieval — `app/retrieve/semantic.py` `search_semantic → list[ScoredChunk]`, cosine order, `ef_search` knob | ✅ complete & verified, committed — new `app/retrieve/` pkg (`types.py` shared `ScoredChunk`; `semantic.py`); score = cosine similarity (`1 − dist`); `ef_search` via `set_config`; owner = visibility seam; `test_semantic.py` (4 tests) + `docs/learning/Q2-semantic-search.md`; suite 42+2 |
-| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ✅ complete & verified — `app/retrieve/retrieve.py` `retrieve(query, *, k=None, owner_id)` wraps query in RETRIEVAL_QUERY role → owns `SessionLocal` → `search_semantic`; `RetrievalResult` (query/chunks/timings) in shared `types.py`; `Settings.retrieval_k=10`; module seams; `explain.py` CLI backs the skill; `test_retrieve.py` (4 tests) + note `Q3-query-embedding.md`; suite 46+2; live trace ran on dev DB. Not yet committed |
-| Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ⬜ |
+| Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ✅ complete & verified — `app/retrieve/retrieve.py` `retrieve(query, *, k=None, owner_id)` wraps query in RETRIEVAL_QUERY role → owns `SessionLocal` → `search_semantic`; `RetrievalResult` (query/chunks/timings) in shared `types.py`; `Settings.retrieval_k=10`; module seams; `explain.py` CLI backs the skill; `test_retrieve.py` (4 tests) + note `Q3-query-embedding.md`; suite 46+2; live trace ran on dev DB. Committed `3fcc2f7` (pushed) |
+| Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ✅ code done & verified — `eval/metrics.py` (pure hit@k/RR/MRR), `eval/run.py` (`python -m eval.run` → hit@{1,3,5,10}+MRR, timestamped results JSON), `eval/build_golden.py` (regenerator: expected-answer→chunk_id, **source-scoped** to the answer's own file, re-run after re-ingest); traps deferred to Q8; source = 5-column `eval/golden_questions.md` (48 Q + 10 traps); `pytest.ini` `pythonpath = . backend`; `test_eval_metrics.py` (13) + `test_build_golden.py` (5); note `Q4-retrieval-eval.md`; offline suite **63+3**. **Corpus-expansion gate SATISFIED** (15→48 Q, 1→9 docs; 8 new docs staged under `eval/corpus/`). **Manual live steps remain:** ingest the 8 corpus docs → build golden set → record baseline |
 | Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ⬜ |
 | Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ⬜ |
 | Q7 | Cross-encoder rerank — retrieve-wide → rerank to 5–10; **provider decision (ADR)** | ⬜ |
@@ -154,13 +163,18 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **M0–M8 + Phase 2 Q1 + Q2 are committed & pushed** — `main` is at the **Phase 2 Q2**
-  commit (`8efed87`), on top of `f53a596` (Q1 indexes) → `c2994f9` (dev.ps1 Beat window) →
-  `729e651` (M8 async layer). The latest commit is `557d71e` (changelog extraction). **Q3 is
-  green in the working tree but not yet committed** — `app/retrieve/retrieve.py` +
-  `explain.py`, `RetrievalResult` in `types.py`, `Settings.retrieval_k`, `test_retrieve.py`,
-  the `explain-retrieval` SKILL wiring, and `docs/learning/Q3-query-embedding.md`, plus these
-  doc refreshes. (`.vscode/settings.json`, the SQLTools connection, is git-ignored.)
+- **M0–M8 + Phase 2 Q1–Q3 + eval de-contamination are committed & pushed** — `main` is at
+  **`10d305c`** (de-contaminate eval corpus), on top of `3fcc2f7` (Phase 2 Q3) → `557d71e`
+  (changelog extraction) → `8efed87` (Q2) → `f53a596` (Q1) → `729e651` (M8). **Q4 is green in the
+  working tree but not yet committed** — the `eval/` package (`metrics.py`, `run.py`, source-scoped
+  `build_golden.py`, `__init__.py`, `results/.gitkeep`), the 5-column `eval/golden_questions.md`, the
+  8 new docs under `eval/corpus/`, the deletion of the old `eval/golden_source.md`,
+  `backend/tests/test_eval_metrics.py` + `test_build_golden.py`, `pytest.ini` (`pythonpath`),
+  `docs/learning/Q4-retrieval-eval.md`, and these doc refreshes. **Q4's commit is deliberately held
+  until the manual live steps run** (ingest the corpus, build the golden set, record the baseline) so
+  `golden.jsonl` + the first `eval/results/*.json` land in the same commit. (`.vscode/settings.json` —
+  SQLTools connection + Pylance `python.analysis.extraPaths` for the `app.*`/`eval.*` import roots —
+  is git-ignored.)
 
 ## Changelog
 

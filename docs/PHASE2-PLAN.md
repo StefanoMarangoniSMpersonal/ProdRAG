@@ -109,20 +109,45 @@ ingestion **M0–M8** series; numbering is adjustable.
 - **Test (`test_retrieve.py`):** fake `embed_texts` recording its input → assert the query was
   wrapped with `as_retrieval_query`; real pgvector search over seeded chunks returns expected order.
 
-### Q4 — Retrieval eval baseline (golden set + hit@k / MRR)  ← woven eval begins
-- **Code:** create the `/eval` package the scaffolds already assume:
-  `eval/golden.jsonl` (a handful of questions over the ingested corpus, each with its relevant
-  `chunk_id`s), `eval/run.py` (`python -m eval.run --golden eval/golden.jsonl --out eval/results/`),
-  retrieval metrics **hit@k** and **MRR**, results saved under `eval/results/` for baseline
-  comparison. Wire `eval-run` skill (retrieval mode). Record the **semantic-only baseline**.
-  The golden Q&A source is already staged (de-contaminated) at **`eval/golden_source.md`** — Q4 turns
-  its 15 questions into `golden.jsonl` by mapping each to the relevant `chunk_id`s of the freshly
-  re-ingested clean corpus; the "Expected Answer" column is held for RAGAS reference answers at Q9.
-- **Teaching note** (`Q4-retrieval-eval.md`): what hit@k and MRR measure and their blind spots; how
-  to build a golden set (and how a bad golden set lies to you); the baseline→delta loop that Q5–Q7
-  are measured by.
-- **Test (`test_eval_metrics.py`):** hit@k / MRR are pure functions — assert on hand-built rankings
-  (deterministic, offline). Harness `run` gets a smoke test with a faked retriever so CI stays offline.
+### Q4 — Retrieval eval baseline (golden set + hit@k / MRR)  ← woven eval begins  ✅ CODE DONE (live baseline pending)
+- **Code:** the `/eval` package (repo root, so `python -m eval.run` works): `eval/metrics.py` (pure
+  `hit_at_k` / `reciprocal_rank` / `mrr` / `hit_rate_at_k`), `eval/run.py`
+  (`python -m eval.run --golden eval/golden.jsonl --out eval/results/` — drives the real `retrieve()`,
+  scores hit@{1,3,5,10} + MRR, writes a timestamped results JSON with run metadata), and
+  `eval/build_golden.py` (the **regenerator**). `pytest.ini` gained `pythonpath = . backend` so both
+  `eval.*` and `app.*` resolve from either root; `run.py`/`build_golden.py` bootstrap `sys.path` +
+  load `backend/.env` so the CLI works from the repo root with `GEMINI_API_KEY`.
+- **Decisions locked (2026-07-15 / 07-16):**
+  1. **Relevance key = generator + chunk_ids.** `golden.jsonl` stores `chunk_id`s, but they are
+     produced by re-runnable `build_golden.py` (maps each expected answer → the chunk(s) containing
+     it, **scoped to the answer's own Source File**, for human review) — because chunk ids are
+     `BIGINT IDENTITY` values that churn on every re-ingest. Re-run the builder after any re-ingest.
+  2. **Trap questions deferred to Q8.** Q4 `golden.jsonl` = the 48 answerable questions only (hit@k/MRR
+     are undefined with no relevant chunk); the 10 traps stay in `golden_questions.md` for Q8's refusal eval.
+  3. **Corpus expanded to satisfy the gate below** (07-16): 15 → 48 questions, 1 → 9 docs.
+  4. **Golden-set format = 5-column** (`# | Question | Source File | Category | Expected Answer`) in
+     `eval/golden_questions.md`; the **Source File** column drives source-scoped matching, the
+     **Category** column is parsed past but not stored (deferred).
+- **Teaching note** (`Q4-retrieval-eval.md`): what hit@k and MRR measure + blind spots; the chunk-id
+  churn trap; why *question count* (not chunk count) drives statistical noise; the baseline→delta loop.
+- **Tests (test-first, immutable):** `test_eval_metrics.py` (13) — hit@k / MRR pure functions on
+  hand-built rankings, harness smoke with a faked `retrieve`, one `@pytest.mark.live` real e2e; plus
+  `test_build_golden.py` (5) — 5-column parser + source-scoped matcher. Offline suite **63 pass +
+  3 deselected, 0 skip**.
+- **Still MANUAL (live, with the user):** ingest the 8 `eval/corpus/` docs → run `build_golden.py` →
+  review `golden.jsonl` → run `eval.run` to record the semantic-only baseline under `eval/results/`;
+  then the `eval-run` skill check.
+
+### Gate before Q5 — corpus expansion (SATISFIED 2026-07-16; live ingest pending)
+The original corpus was **15 questions / 13 chunks** — enough to prove the harness, **too small to
+trust a delta** (at N=15 the 95% CI on hit-rate is ≈±20 pts, wider than the 5–15 pt gains Q5–Q7
+produce; and with 13 chunks, k=10 retrieves almost everything → ceiling effect). **Now expanded to 48
+questions over 9 documents:** 8 new adversarial fictional-company docs (Thornfield University, Lakeview
+Medical Center, NovaBridge, Port Kessler, Valdoria, …) staged under `eval/corpus/`, plus the existing
+`rag_test_document.md`. The docs are still **on disk only — not yet ingested**; the golden set
+(`golden_questions.md`) is authored but its `chunk_id`s aren't derived yet. Remaining: ingest the 8
+corpus docs, then re-run `build_golden.py`. Keep the golden Q&A un-ingested. Rationale in
+`docs/learning/Q4-retrieval-eval.md`.
 
 ### Q5 — Lexical retrieval (Postgres full-text)
 - **Code:** `app/retrieve/lexical.py` — `async def search_lexical(session, query_text, *, k) ->
@@ -218,4 +243,6 @@ semantic cache · query rewrite / HyDE · frontend chat + upload UI.
 - **Q1:** map `tsv` on the `Chunk` model vs raw-SQL-only (default: map it).
 - **Q7:** reranker provider — managed rerank API vs Gemini-as-reranker (ADR).
 - **Q8:** generation model id; citation granularity chunk vs span (ADR).
-- **Q4/Q9:** golden-set size and source (hand-authored over the ingested corpus vs generated).
+- **Q4:** ~~golden-set size and source~~ **decided 2026-07-15/16** — generator (`build_golden.py`) maps
+  48 hand-authored questions → chunk_ids (source-scoped); corpus expanded to 9 docs (gate satisfied).
+- **Q9:** reference-answer source for RAGAS (reuse `golden_questions.md`'s Expected Answer column).

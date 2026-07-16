@@ -5,6 +5,40 @@
 > in `docs/PROGRESS.md`; live session state in `docs/HANDOFF.md`; the constitution in
 > `CLAUDE.md`. Add an entry here whenever a milestone lands.
 
+- **2026-07-16 (Phase 2 — Q4: retrieval eval baseline — hit@k / MRR)** — the ruler that turns
+  "retrieval feels okay" into a number, so Q5–Q7 improvements can be *measured*, not guessed. New
+  **`/eval` package** at the repo root (so `python -m eval.run` works, matching the `eval-run` skill):
+  **`eval/metrics.py`** — pure, DB-free `hit_at_k` / `reciprocal_rank` / `mrr` / `hit_rate_at_k`
+  (hit@k = "a relevant chunk in the top k"; MRR = mean of 1/rank-of-first-relevant); **`eval/run.py`**
+  — `python -m eval.run --golden eval/golden.jsonl --out eval/results/` drives the real `retrieve()`
+  per golden question (retrieves once at max-k, slices for smaller cutoffs), scores hit@{1,3,5,10} +
+  MRR, prints a table, and writes a timestamped results JSON (summary + per-query rows + run metadata:
+  git SHA, model, corpus doc/chunk counts) as the baseline later runs diff against; **`eval/build_golden.py`**
+  — the **regenerator** that maps each expected answer in **`golden_questions.md`** to the chunk(s)
+  containing it, **scoped to the answer's own Source File**, and writes a draft `golden.jsonl` for
+  human review. **Three architect decisions locked:** (1) **relevance key = generator + chunk_ids** —
+  `golden.jsonl` stores `chunk_id`s but they're *derived* by `build_golden.py`, because chunk ids are
+  `BIGINT IDENTITY` values that churn on every re-ingest (a hand-typed file would silently rot);
+  (2) **trap questions deferred to Q8** — Q4's golden set is the 48 answerable questions only
+  (hit@k/MRR are undefined with no relevant chunk); the 10 trap questions stay in `golden_questions.md`
+  for Q8's refusal eval; (3) **corpus expanded to satisfy the gate** — the golden set grew from 15 → 48
+  questions and the corpus from 1 → 9 documents (8 new adversarial fictional-company docs under
+  `eval/corpus/`), because at N=15 the 95% CI on hit-rate is ≈±20 pts (wider than the 5–15 pt gains
+  Q5–Q7 produce) and k=10 over 13 chunks hits a ceiling. **Golden-set format change:** the source is a
+  5-column table (`# | Question | Source File | Category | Expected Answer`); the **Source File** column
+  lets `build_golden.py` scope each answer-match to its own document, killing cross-document false
+  positives (an answer string that also appears in an unrelated doc). The **Category** column is parsed
+  past but not stored (deferred). **Wiring:** `pytest.ini` gained `pythonpath = . backend` (makes the
+  implicit `app` import explicit and lets tests import `eval.*`); `run.py`/`build_golden.py` bootstrap
+  `sys.path` + load `backend/.env` so the CLI runs from the repo root with `GEMINI_API_KEY`.
+  **Test-first, immutable:** `test_eval_metrics.py` (13 tests — pure-metric asserts on hand-built
+  rankings, a golden-jsonl loader test, an offline harness smoke test with a fake `retrieve`, and one
+  `@pytest.mark.live` real end-to-end run) + `test_build_golden.py` (5 tests — 5-column parser drops
+  the Category cell + skips the trap table; source-scoped matcher; money/comma normalization;
+  absent-source → empty). Teaching note **`docs/learning/Q4-retrieval-eval.md`**. **Verified:** offline
+  suite **63 pass + 3 deselected (live), 0 skip** (was 46+2); ruff + black clean. **Remaining manual
+  live steps (with the user):** ingest the 8 `eval/corpus/` docs, run `build_golden.py` → review
+  `golden.jsonl`, then `eval.run` to record the semantic-only baseline.
 - **2026-07-14 (Phase 2 — Q3: retrieval orchestrator + query embedding)** — the first
   *end-to-end* read: one call that turns a query **string** into ranked chunks. New
   **`app/retrieve/retrieve.py`** **`retrieve(query: str, *, k=None, owner_id=DEV_OWNER_ID)

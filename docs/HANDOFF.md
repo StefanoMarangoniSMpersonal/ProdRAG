@@ -1,17 +1,19 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-14 (end of session). **Phase 1 is DONE**; **Phase 2 retrieval is
-underway — Q1, Q2, and now Q3 are all complete & verified.** Q1 (`f53a596`) switched on the HNSW
-vector index + a generated `tsv tsvector` column (+ GIN); Q2 (`8efed87`) added the `app/retrieve/`
-package — `search_semantic` returns `list[ScoredChunk]` ordered by cosine. **Q3 is the first
-end-to-end read:** new `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id) ->
-RetrievalResult` wraps the query in the RETRIEVAL_QUERY role, owns its own `SessionLocal`, and calls
-`search_semantic`; `RetrievalResult` (query/chunks/`timings_ms`) lands beside `ScoredChunk` in the
-shared `types.py`; `Settings.retrieval_k=10` is new; the `explain-retrieval` skill is wired to a new
-`app/retrieve/explain.py` CLI. Suite = **46 pass + 2 deselected (live), 0 skip** (was 42). **Q3 is
-green but NOT yet committed** — `main` is still at the Q2 commit (`8efed87`, latest `557d71e`); the
-Q3 files sit in the working tree awaiting a `Phase 2 Q3` commit. **Next starts at Q4** (retrieval
-eval baseline — golden set + hit@k / MRR). The approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`._
+_Last updated: 2026-07-16 (end of session). **Phase 1 is DONE**; **Phase 2 retrieval —
+Q1–Q4 code complete & verified; Q4 live baseline pending.** Q1 (`f53a596`) HNSW + generated `tsv`
+(+ GIN); Q2 (`8efed87`) `app/retrieve/` `search_semantic → list[ScoredChunk]`; Q3 (`3fcc2f7`) first
+end-to-end read `retrieve(query) -> RetrievalResult`; eval corpus de-contaminated (`10d305c`). **Q4 =
+the eval ruler (code green, NOT committed):** repo-root **`/eval` package** — `metrics.py` (pure
+hit@k / RR / MRR), `run.py` (`python -m eval.run …` drives real `retrieve()`, writes a timestamped
+baseline JSON), `build_golden.py` (regenerator: expected-answer → chunk_id, **source-scoped**, re-run
+after re-ingest — chunk ids churn). **Corpus-expansion gate SATISFIED:** golden set grew 15 → **48 Q
+over 9 docs** — source is now the 5-column `eval/golden_questions.md`, and 8 new adversarial docs are
+staged under `eval/corpus/` (on disk, **not yet ingested**). `pytest.ini` has `pythonpath = . backend`.
+Offline suite = **63 pass + 3 deselected (live), 0 skip** (was 46+2). **Q4's commit is held for the
+MANUAL LIVE steps below** (ingest the 8 corpus docs, build the golden set, record the baseline) so
+`golden.jsonl` + the first `eval/results/*.json` land with the code. `main` is at `10d305c`.
+**Next = those live steps, then commit Q4, then Q5.** Approved Q1–Q10 breakdown: `docs/PHASE2-PLAN.md`._
 
 _This file keeps only **what's live + what's next**. Settled detail lives in the code,
 `docs/PROGRESS.md` (layer-by-layer % tracker), and auto-memory (`phase1-ingestion.md`,
@@ -21,10 +23,11 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
 
 - **Done & verified:** Phase 0 spine (Next.js → FastAPI → Postgres/pgvector → back),
   Phase 1 **M0–M7** (schema → storage → parse → chunk → embed → write → orchestrator →
-  upload endpoint), and the **async layer** (Celery worker + Redis broker + fenced reaper).
-  Suite = **42 offline pass + 2 deselected live** (35 through M8 + 3 from Q1 + 4 from Q2; the
-  2 live tests — `test_embed_live_real_gemini` + `test_orchestrate_..._live` — both pass
-  against real Gemini; deselected by default, not skipped). Per-milestone detail:
+  upload endpoint), the **async layer** (Celery worker + Redis broker + fenced reaper), and
+  **Phase 2 Q1–Q4** (indexes → semantic → retrieve() → eval harness). Offline suite = **63 pass +
+  3 deselected live** (35 through M8 + 3 Q1 + 4 Q2 + 4 Q3 + 12 Q4 + 5 build_golden; the 3 live tests —
+  `test_embed_live_real_gemini`, `test_orchestrate_..._live`, `test_harness_runs_live_end_to_end` —
+  hit real Gemini/dev DB; deselected by default, not skipped). Per-milestone detail:
   `PROGRESS.md` + memory `phase1-ingestion` / `phase2-retrieval`.
 - **The pipeline is proven live (2026-07-10):** `test_orchestrate_..._live` ran the whole
   thing against real Gemini on the Aurelia fixture — 16 chunks, doc `ready`, ~8.2 s.
@@ -44,7 +47,7 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
   writing (the superseded run writes zero chunks). Redis is **broker-only** — no result
   backend; `documents.status` stays the single source of truth. See "Seams" + memory
   `phase1-ingestion`.
-- **Phase 2 retrieval — IN PROGRESS. Q1 + Q2 + Q3 done (Q3 2026-07-14), next = Q4.** The query
+- **Phase 2 retrieval — IN PROGRESS. Q1–Q4 done (Q4 code 2026-07-16); next = Q4's manual live baseline, then Q5.** The query
   pipeline reads M7's embedded chunks — embed query (`as_retrieval_query`, already built) → hybrid
   pgvector + full-text → RRF → cross-encoder rerank → generate. Full milestone breakdown (Q1–Q10)
   approved in **`docs/PHASE2-PLAN.md`**. Locked decisions: **eval is woven** (retrieval hit@k/MRR at
@@ -69,22 +72,40 @@ loaded every session). Read this + `CLAUDE.md` (the constitution) to pick up._
     (generalizes to role/clearance later; deferred to auth). New config
     `retrieval_hnsw_ef_search=40`. Test-first `test_semantic.py` (4 tests: order / score direction /
     `k` truncation / owner filter) + teaching note `docs/learning/Q2-semantic-search.md`. Suite 42+2.
-  - **Q3 (retrieval orchestrator + query embedding) COMPLETE & verified — NOT yet committed.**
-    New `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id=DEV_OWNER_ID) ->
+  - **Q3 (retrieval orchestrator + query embedding) COMPLETE & committed (`3fcc2f7`).**
+    `app/retrieve/retrieve.py` — `retrieve(query: str, *, k=None, owner_id=DEV_OWNER_ID) ->
     RetrievalResult`, the first end-to-end read: embeds the query STRING via the existing seam
     `embed_texts([as_retrieval_query(q)])[0]` (RETRIEVAL_QUERY role — a text prefix, not a
     `task_type`), owns its own `SessionLocal` (the `orchestrate.py` pattern), calls the built
     `search_semantic`, returns a frozen **`RetrievalResult`** (`query`, `chunks`, `timings_ms`)
-    now living beside `ScoredChunk` in the shared `types.py`. Collaborators are module-level
-    monkeypatch seams (`SessionLocal`, `embed_texts`, `as_retrieval_query`, `search_semantic`).
-    `k=None` resolves to new **`Settings.retrieval_k=10`** inside the fn. **`explain-retrieval`
-    wired:** new `app/retrieve/explain.py` CLI (`python -m app.retrieve.explain "<query>"`) drives
-    the real `retrieve()` and prints query → role-wrapped string → embedding → semantic candidates
-    → timings; `SKILL.md` updated. Test-first `test_retrieve.py` (4 tests: query-role wrapping /
-    end-to-end order / `k` truncation / result shape+timings) + note `docs/learning/Q3-query-embedding.md`.
-    Suite **46+2**; a live trace ran against the dev DB. **Awaiting a `Phase 2 Q3` commit.**
-  - **Q4 is next:** the retrieval eval baseline — a `/eval` package, `golden.jsonl`, and hit@k / MRR
-    over `retrieve()` (woven eval begins). See `docs/PHASE2-PLAN.md`.
+    beside `ScoredChunk` in the shared `types.py`. Collaborators are module-level monkeypatch seams.
+    `k=None` resolves to **`Settings.retrieval_k=10`** inside the fn. **`explain-retrieval` wired:**
+    `app/retrieve/explain.py` CLI. `test_retrieve.py` (4 tests) + note `Q3-query-embedding.md`.
+  - **Q4 (retrieval eval baseline) — code green, NOT yet committed.** Repo-root **`/eval` package**
+    (so `python -m eval.run` matches the `eval-run` skill): **`metrics.py`** — pure, DB-free
+    `hit_at_k` / `reciprocal_rank` (1/rank-of-first) / `mrr` / `hit_rate_at_k` (empty → 0, no
+    divide-by-zero); **`run.py`** — `load_golden` + `async evaluate_golden(golden, *, ks=(1,3,5,10))`
+    (retrieves ONCE per Q at max-k via the `retrieve` module-seam, slices smaller cutoffs) +
+    `write_report` (timestamped JSON: summary + per-query + git-sha/model/corpus-counts) + CLI
+    `main(--golden --out)`; **`build_golden.py`** — the regenerator: parses the **5-column**
+    `eval/golden_questions.md` (`# | Q | Source File | Category | Expected Answer`), loads dev chunks,
+    normalized substring-match expected-answer → chunk.id **scoped to the answer's own Source File**,
+    writes DRAFT `golden.jsonl` + flags `source-missing` / `0-match` / `>1-match` rows for human
+    review (Category parsed past, not stored). **Architect decisions:** (1) relevance key =
+    **generator + chunk_ids** (DERIVED — chunk ids are `BIGINT IDENTITY`, churn on re-ingest → re-run
+    the builder); (2) traps **deferred to Q8** (Q4 golden = the 48 answerable Qs; 10 traps live in
+    `golden_questions.md`); (3) **corpus-expansion gate SATISFIED** — 15 → 48 Q, 1 → 9 docs (8 new
+    adversarial docs staged under `eval/corpus/`, on disk / not yet ingested). **Wiring:** `pytest.ini`
+    `pythonpath = . backend`; `run.py`/`build_golden.py` bootstrap `sys.path` + `load_dotenv(backend/.env)`
+    so the CLI runs from the repo root with `GEMINI_API_KEY`. Test-first: `test_eval_metrics.py` (13:
+    pure-metric asserts + golden loader + offline harness smoke w/ fake `retrieve` + 1 live e2e) +
+    `test_build_golden.py` (5: 5-column parser drops Category + skips trap table; source-scoped matcher;
+    money/comma normalization; absent-source → empty) + note `docs/learning/Q4-retrieval-eval.md`.
+    Offline suite **63+3**; ruff + black clean. **REMAINING = manual live steps (need dev DB up +
+    `GEMINI_API_KEY`):** (a) ingest the 8 `eval/corpus/` docs via `POST /documents`; (b)
+    `python -m eval.build_golden` → review `golden.jsonl` by hand; (c) `python -m eval.run --golden
+    eval/golden.jsonl --out eval/results/` → record the baseline; then commit Q4 (code + `golden.jsonl`
+    + first `eval/results/*.json` together).
 - **Test-first & immutable is a hard rule:** write the failing test first; once written a
   test is immutable — fix the code, never the test; if the spec is wrong, stop and ask.
   Full text in `CLAUDE.md`; memory `testing-test-first-immutable`.
@@ -128,7 +149,7 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
 - **✅ Eval-corpus de-contamination (2026-07-14) — DB purged + cleanly re-ingested.** The
   fixture `rag_test_document.md` used to embed the "Golden Question Set" (answer key) after §18;
   ingesting it put the oracle into the retrievable store (**test-set leakage**). The fixture is
-  now **stripped to §1–18** (golden set extracted to `eval/golden_source.md`, never ingested).
+  now **stripped to §1–18** (the golden set lives in `eval/golden_questions.md`, never ingested).
   The old contaminated content (2 `documents` + 32 `chunks`, the same pre-strip file ingested
   twice — a 2026-07-10 direct-orchestrate run + a 2026-07-11 M8 Celery smoke; two rows for
   identical content is expected since **upload dedup is deferred**) was dropped via
@@ -166,9 +187,15 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
   testcontainers harness (session container + rolled-back per-test `db_session` + committing
   `session_factory`); as of Q1 it **globs & applies every `infra/db/migrations/*.sql`** in order
   (was hardcoded to `002`), so the test schema matches what `apply-migrations.ps1` builds.
+- **`/eval`** — retrieval eval package (repo root, so `python -m eval.run` matches the `eval-run`
+  skill). `metrics.py` (pure hit@k/MRR), `run.py` (harness + CLI over the real `retrieve()`),
+  `build_golden.py` (the source-scoped golden.jsonl regenerator), `golden_questions.md` (the
+  never-ingested oracle — 5-column table, 48 answerable Q&A + 10 trap Qs), `corpus/` (the 8 new
+  adversarial docs to ingest), `results/` (baseline result JSONs accumulate here). `golden.jsonl` +
+  the first result file appear once the manual live steps run.
 - **`/docs`** — decisions/notes; `PROGRESS.md` (layer tracker), `PHASE2-PLAN.md` (approved Q1–Q10),
   and **`docs/learning/`** (per-milestone teaching notes; holds `Q1-indexes.md`,
-  `Q2-semantic-search.md`, `Q3-query-embedding.md`).
+  `Q2-semantic-search.md`, `Q3-query-embedding.md`, `Q4-retrieval-eval.md`).
 - **`/frontend`** — Next.js (App Router, TS, Tailwind v4); fetches `/health/db`, builds clean.
 - **Tooling** — `dev.ps1` / `stop.ps1`; `README.md` (GitHub front page); `.gitignore`
   hardened (`backend/.env` git-ignored).
@@ -176,16 +203,22 @@ Beat writes a local `celerybeat-schedule*` file in `backend/` (git-ignored).
 ## Git state
 
 - Remote **github.com/StefanoMarangoniSMpersonal/ProdRAG**, branch `main`. **`main` is at
-  `557d71e`** (changelog extraction), in sync with `origin/main`. Recent: `729e651` (M8 async
-  layer) → `c2994f9` (dev.ps1 Beat-window fix) → **`f53a596` (Phase 2 Q1: retrieval indexes)** →
-  **`8efed87` (Phase 2 Q2: naive semantic search)** → `557d71e` (changelog extraction).
-  **Q3 is green but NOT yet committed** — the working tree holds `app/retrieve/retrieve.py` +
-  `explain.py`, the `RetrievalResult`/`retrieval_k`/`explain-retrieval SKILL` edits,
-  `test_retrieve.py`, `docs/learning/Q3-query-embedding.md`, and these `PROGRESS.md`/`HANDOFF.md`
-  refreshes; next commit = `Phase 2 Q3`. No `Co-Authored-By` trailer (user preference).
-  `ruff check backend` clean.
-- **Git-ignored, never committed:** `.vscode/settings.json` (SQLTools connection);
-  `backend/celerybeat-schedule*` (Beat's local schedule DB).
+  `10d305c`** (de-contaminate eval corpus), in sync with `origin/main`. Recent: `8efed87` (Q2) →
+  `557d71e` (changelog extraction) → **`3fcc2f7` (Phase 2 Q3)** → **`10d305c` (eval de-contamination)**.
+  **Q4 is green but NOT yet committed** — the working tree holds the whole **`eval/` package**
+  (`metrics.py`, `run.py`, source-scoped `build_golden.py`, `__init__.py`, `results/.gitkeep`), the
+  5-column **`eval/golden_questions.md`**, the 8 new docs under **`eval/corpus/`**, the **deletion of
+  `eval/golden_source.md`** (the old 15-Q source), `backend/tests/test_eval_metrics.py` +
+  `test_build_golden.py`, `pytest.ini` (the `pythonpath` line), `docs/learning/Q4-retrieval-eval.md`,
+  and these `PROGRESS.md`/`PHASE2-PLAN.md`/`CHANGELOG.md`/`HANDOFF.md` refreshes. **Its commit is
+  deliberately deferred** until the manual live steps produce `eval/golden.jsonl` + the first
+  `eval/results/*.json`, so they land in the `Phase 2 Q4` commit together. No `Co-Authored-By` trailer
+  (user preference). `ruff` + `black` clean on the new files.
+- **Git-ignored, never committed:** `.vscode/settings.json` (SQLTools connection **+
+  `python.analysis.extraPaths=[".","backend"]`** so Pylance resolves the runtime-bootstrapped
+  `app.*`/`eval.*` imports — without it the editor false-flags them as unresolved; pytest is
+  unaffected, it reads `pythonpath` from `pytest.ini`); `backend/celerybeat-schedule*` (Beat's
+  local schedule DB).
 - **The `Proactive Autoscaling.pdf` fixture — resolved.** The immutable
   `test_parse_pdf_hi_res_infers_table_structure` references
   `tests/fixtures/Proactive Autoscaling.pdf`, but that file had only ever been *untracked*,
@@ -257,28 +290,42 @@ _Full milestone shapes + rationale + Windows/Unstructured gotchas are in memory
 
 ## Suggested first moves next session
 
-0. **Commit Q3 first.** It's green in the working tree but uncommitted — stage the Q3 files
-   (`app/retrieve/retrieve.py` + `explain.py`, the `types.py`/`config.py`/`explain-retrieval`
-   SKILL edits, `test_retrieve.py`, `docs/learning/Q3-query-embedding.md`, and these doc refreshes)
-   and land a `Phase 2 Q3` commit before starting new work, so `main` moves off the Q2 commit.
-1. **Then start Q4** — the retrieval eval baseline (woven eval begins). New `/eval` package +
-   `golden.jsonl` (a small hand-built set of query → expected-chunk/doc), scored with **hit@k** and
-   **MRR** (mean reciprocal rank) over `retrieve()`. This is where the `eval-run` skill scaffold
-   gets filled and `RetrievalResult.timings_ms` starts feeding a report. See `docs/PHASE2-PLAN.md`
-   for the approved Q4 shape.
-2. **Phase 2 mindset:** each milestone ships test-first code **plus** a teaching note
-   `docs/learning/Qx-*.md` (Q3's is `Q3-query-embedding.md`); fill the `explain-retrieval` /
-   `eval-run` skills as their stages land. Slow down and teach — this is the RAG core.
-3. **Reaper still unverified live** (the M8 smoke test proved the happy path, not the reaper):
+0. **Finish Q4 with the manual live steps, then commit.** Q4's code is green and the corpus is
+   already expanded (48 Q / 9 docs); its commit is held so the generated artifacts land with it.
+   Bring up the dev stack (`.\dev.ps1`) and make sure `GEMINI_API_KEY` is in `backend/.env`, then:
+   1. **Ingest the 8 corpus docs** (`rag_test_document.md` is already ingested — 13 chunks). From the
+      repo root: `Get-ChildItem eval/corpus/*.md | ForEach-Object { curl.exe -F "file=@$($_.FullName)"
+      http://localhost:8000/documents; "" }` — then poll each `GET /documents/<id>` until `ready`.
+      (`curl.exe`, not `curl`. Careful: re-ingesting churns chunk ids → always re-run `build_golden.py`.)
+   2. `backend\.venv\Scripts\python.exe -m eval.build_golden` → writes a DRAFT `eval/golden.jsonl`
+      + a review report. **Eyeball it by hand** — expect flagged rows (`source-missing` = the doc
+      isn't ingested; `0-match` = paraphrased/composed answer like #5, add the id; `>1-match` =
+      confirm/trim). This is the human-in-the-loop step the whole design hinges on.
+   3. `backend\.venv\Scripts\python.exe -m eval.run --golden eval/golden.jsonl --out eval/results/`
+      → prints the hit@k/MRR table + writes the first `eval/results/*.json`. **This is the
+      semantic-only baseline** every Q5–Q7 delta is measured against.
+   4. Land a `Phase 2 Q4` commit: the `eval/` package + `golden_questions.md` + `eval/corpus/` + the
+      `golden_source.md` deletion + `test_eval_metrics.py` + `test_build_golden.py` + `pytest.ini` +
+      `golden.jsonl` + the baseline result file + the doc refreshes, together.
+   (Both CLIs run from the repo root — they bootstrap `sys.path`/`.env` themselves. Sanity-check
+   offline first: `... -m pytest -k "eval_metrics or build_golden"` should be 17 green — Docker not
+   needed for those.)
+1. **Then Q5** — lexical retrieval (`app/retrieve/lexical.py` `search_lexical` via
+   `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv`), then re-run the eval and record the
+   delta. Each milestone ships test-first code **plus** a teaching note `docs/learning/Qx-*.md`.
+   Slow down and teach — this is the RAG core.
+2. **Reaper still unverified live** (the M8 smoke test proved the happy path, not the reaper):
    with Beat in its own `dev.ps1` window, shorten `ingest_stuck_after_seconds`, leave a
    `processing` row with an old `updated_at`, and watch Beat requeue it + `attempt` increment.
    Optional — the fence logic is under `test_worker.py`, so this is a live-confidence check.
-4. **Optional cleanup:** a formatting-only commit for the `test_parse.py` `black` debt (see
+3. **Optional cleanup:** a formatting-only commit for the `test_parse.py` `black` debt (see
    Open items).
-5. **Naive-first but still test-first** — the red/green net exists before the naive code.
+4. **Naive-first but still test-first** — the red/green net exists before the naive code.
 
-To re-run the smoke test: `.\dev.ps1`, then (note **`curl.exe`**, not `curl`):
+To re-run the ingestion smoke test: `.\dev.ps1`, then (note **`curl.exe`**, not `curl`):
 `curl.exe -F "file=@backend/tests/fixtures/rag_test_document.md" http://localhost:8000/documents`
 → 202 + id; poll `curl.exe http://localhost:8000/documents/<id>` until `ready`; inspect via
 `infra/db/explore.sql`. Needs `GEMINI_API_KEY` in `backend/.env` + docker-compose Postgres +
-Redis up (not the testcontainer).
+Redis up (not the testcontainer). **Careful:** a fresh upload adds another `rag_test_document.md`
+row (dedup deferred) — if you want the golden `chunk_id`s to stay valid, don't re-ingest without
+re-running `build_golden.py`.
