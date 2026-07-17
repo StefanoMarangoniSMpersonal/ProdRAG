@@ -1,0 +1,48 @@
+{"id": 1, "question": "Who is the CEO of Aurelia Robotics?", "relevant_chunk_ids": [34, 37], "expected_answer": "Marta Silveira"}
+{"id": 2, "question": "What is the battery life of the Sparrow Mini?", "relevant_chunk_ids": [35], "expected_answer": "22 hours continuous operation"}
+{"id": 3, "question": "Why was the Kestrel product line discontinued?", "relevant_chunk_ids": [35], "expected_answer": "Due to a critical hinge defect discovered in 1,200 units"}
+{"id": 4, "question": "How much did Aurelia Robotics raise in its Series C round, and who led it?", "relevant_chunk_ids": [37], "expected_answer": "$30 million, led by Northbridge Ventures"}
+{"id": 5, "question": "Which company has a higher max payload on its large warehouse robot — Aurelia Robotics or Halcyon Dynamics?", "relevant_chunk_ids": [35, 40], "expected_answer": "Halcyon Dynamics (Griffin-7 at 500 kg vs. Falcon-9X at 450 kg)"}
+{"id": 6, "question": "What was the firmware version that caused the Rotterdam incident at Aurelia Robotics?", "relevant_chunk_ids": [38], "expected_answer": "Version 3.2.1"}
+{"id": 7, "question": "Has Cedarwood & Finch ever raised venture capital?", "relevant_chunk_ids": [46], "expected_answer": "No; it has been fully self-financed since 2009"}
+{"id": 8, "question": "What material is the Wickham Rocking Chair made from, and what is its lead time?", "relevant_chunk_ids": [44], "expected_answer": "Black walnut; 4-week lead time"}
+{"id": 9, "question": "Who first described Luminex Syndrome, and at which institution?", "relevant_chunk_ids": [141], "expected_answer": "Dr. Yuna Takahashi at the Bergström Institute in Uppsala, Sweden"}
+{"id": 10, "question": "What percentage of Luminex patients were initially misdiagnosed with essential tremor?", "relevant_chunk_ids": [141], "expected_answer": "38%"}
+{"id": 11, "question": "What drug is used to treat Luminex Syndrome, and by how much does it reduce episode frequency?", "relevant_chunk_ids": [142], "expected_answer": "Velnoprax; it reduces episode frequency by 61% compared to placebo"}
+{"id": 12, "question": "What is the name of the novel luciferin variant discovered in the Kelbrin Trench?", "relevant_chunk_ids": [143], "expected_answer": "Kelbrinase"}
+{"id": 13, "question": "How many new bioluminescent species were catalogued during the Kelbrin Trench expedition?", "relevant_chunk_ids": [143, 145], "expected_answer": "17"}
+{"id": 14, "question": "At 12 months post-burn, what percentage of bacterial diversity had recovered in the burn center compared to the control site?", "relevant_chunk_ids": [147], "expected_answer": "78%"}
+{"id": 15, "question": "What solar-to-hydrogen conversion efficiency did Dr. Morimoto's team achieve?", "relevant_chunk_ids": [148], "expected_answer": "14.2%"}
+{"id": 16, "question": "What is the population of the Republic of Valdoria?", "relevant_chunk_ids": [103], "expected_answer": "6.8 million (2024 census)"}
+{"id": 17, "question": "What is the penalty for a first-offense violation of the DPDSA?", "relevant_chunk_ids": [104], "expected_answer": "50,000 VKR"}
+{"id": 18, "question": "Which three companies were fined after the DPDSA grace period expired?", "relevant_chunk_ids": [104], "expected_answer": "CloudNet Solutions, DataStream AG, and Chirpr"}
+{"id": 19, "question": "What percentage of Valdoria's electricity came from renewables at the time the REM was passed in 2021?", "relevant_chunk_ids": [105], "expected_answer": "43%"}
+{"id": 20, "question": "What minimum salary is required for a Valdorian Blue Card visa?", "relevant_chunk_ids": [110], "expected_answer": "180,000 VKR per year (approximately $34,000 USD)"}
+{"id": 21, "question": "What is the current stable version of the NovaBridge API?", "relevant_chunk_ids": [165], "expected_answer": "v3, released in March 2024"}
+{"id": 22, "question": "What is the rate limit (requests per second) for a NovaBridge Professional tier customer?", "relevant_chunk_ids": [167], "expected_answer": "100 requests per second"}
+{"id": 23, "question": "What is ForgeScript?", "relevant_chunk_ids": [169], "expected_answer": "A declarative domain-specific language (DSL) with JSON-like syntax used by NovaBridge's data transformation engine (\"Forge\") for field mapping, type coercion, conditional logic, and aggregation"}
+{"id": 24, "question": "How many pre-built connectors does NovaBridge offer, and which is the most popular?", "relevant_chunk_ids": [168], "expected_answer": "148 connectors; Salesforce CRM is the most popular (used by 68% of customers)"}
+{"id": 25, "question": "What happens after 5 consecutive webhook delivery failures on NovaBridge?", "relevant_chunk_ids": [171], "expected_answer": "The webhook is automatically disabled and the organization admin receives an email notification"}
+{"id": 26, "question": "When was Port Kessler founded, and by whom?", "relevant_chunk_ids": [114], "expected_answer": "In 1738, by merchant Henrik Kessler"}
+{"id": 27, "question": "How many people died in the Great Harbour Fire of 1821?", "relevant_chunk_ids": [115], "expected_answer": "12"}
+{"id": 28, "question": "How long is the Birren Canal, and how many locks does it have?", "relevant_chunk_ids": [116], "expected_answer": "22 kilometers long with 7 locks"}
+{"id": 29, "question": "What is the oldest surviving structure in Port Kessler?", "relevant_chunk_ids": [114], "expected_answer": "The Kessler Warehouse, built in 1752"}
+{"id": 30, "question": "What did Theresa Lund win the Nobel Prize for?", "relevant_chunk_ids": [120], "expected_answer": "Chemistry (1978), for discovering the Lund Reaction, a catalytic process for synthesizing ammonia alternatives"}
+{"id": 31, "question": "What was LMC's sepsis mortality rate before and after implementing the SEDB protocol?", "relevant_chunk_ids": [131, 132], "expected_answer": "Before: 19.4%; after (within 18 months): 13.8%"}
+{"id": 32, "question": "In the LMC Pediatric Asthma Pathway, what oxygen saturation level defines \"severe\"?", "relevant_chunk_ids": [134], "expected_answer": "Below 90%"}
+{"id": 33, "question": "What is the surgical site infection rate at Lakeview Medical Center compared to the national average?", "relevant_chunk_ids": [137], "expected_answer": "LMC: 1.7%; national average: 2.8%"}
+{"id": 34, "question": "What is the Briarfield Falls Scale, and what score range indicates high risk?", "relevant_chunk_ids": [138], "expected_answer": "A proprietary falls-risk assessment tool at LMC evaluating six factors (age, medications, mobility, cognition, fall history, continence), scored 0–18. A score of 11–18 indicates high risk"}
+{"id": 35, "question": "In Thornton v. Bellweather Industries, what legal doctrine was established?", "relevant_chunk_ids": [123], "expected_answer": "The \"sequential disclosure doctrine\" — internal complaints gain Whistleblower Protection Statute protection retroactively when they lead to a qualifying external disclosure"}
+{"id": 36, "question": "How much was Luminos Energy Corp. ordered to pay in total restitution in the Ashford case?", "relevant_chunk_ids": [124], "expected_answer": "$18.3 million (including statutory interest)"}
+{"id": 37, "question": "In Rivera v. Stonewall Academy, why was the student expelled?", "relevant_chunk_ids": [125], "expected_answer": "For organizing a petition signed by 120 students demanding the school add a mental health counselor; the headmaster characterized it as disruptive"}
+{"id": 38, "question": "What test did the court apply in Patel v. QuickDeliver Inc. to determine employment status?", "relevant_chunk_ids": [128], "expected_answer": "The ABC employment test under Illinois law"}
+{"id": 39, "question": "What is Thornfield University's endowment?", "relevant_chunk_ids": [90], "expected_answer": "$4.3 billion"}
+{"id": 40, "question": "What is the undergraduate acceptance rate at Thornfield?", "relevant_chunk_ids": [93], "expected_answer": "19%"}
+{"id": 41, "question": "What is the \"Thornfield Promise\"?", "relevant_chunk_ids": [102], "expected_answer": "Families earning below $75,000/year pay no tuition; families earning below $150,000/year pay no more than $15,000/year"}
+{"id": 42, "question": "Which Thornfield athletic program is the most successful?", "relevant_chunk_ids": [98], "expected_answer": "Women's lacrosse, with 5 CAC championships (2015, 2017, 2019, 2022, 2024)"}
+{"id": 43, "question": "Who holds the CIVL single-season assist record?", "relevant_chunk_ids": [154], "expected_answer": "Elena Vasquez (1,247 assists, set in 2022)"}
+{"id": 44, "question": "How much did the Montreal Aces' David Okonkwo score in the deciding match of the 2024 CIVL Finals?", "relevant_chunk_ids": [154], "expected_answer": "38 kills"}
+{"id": 45, "question": "Who won the 2024 Harlow Medal at the Millhaven Folk Arts Festival, and for what?", "relevant_chunk_ids": [157], "expected_answer": "Ceramicist Tomoko Ishida, for hand-thrown porcelain vessels inspired by tidal patterns"}
+{"id": 46, "question": "How much has the Kessler Maritime Heritage Foundation raised toward its Birren Canal wing capital campaign?", "relevant_chunk_ids": [159], "expected_answer": "$2.1 million out of a $3.5 million goal (as of late 2024)"}
+{"id": 47, "question": "Comparing the two robotics companies, which one has higher 2024 revenue and by how much?", "relevant_chunk_ids": [36, 41], "expected_answer": "Aurelia Robotics at $55.8M vs. Halcyon Dynamics at $47.6M — a difference of $8.2 million"}
+{"id": 48, "question": "What was the total amount QuickDeliver was ordered to pay (back wages + civil penalty)?", "relevant_chunk_ids": [128], "expected_answer": "$25.4 million ($22.4M in back wages/benefits + $3M civil penalty)"}

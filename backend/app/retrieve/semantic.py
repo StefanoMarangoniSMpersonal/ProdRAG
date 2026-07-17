@@ -77,6 +77,8 @@ async def search_semantic(
     # is_local): value must be text, is_local=true scopes it to the transaction
     # (auto-reverts). Bound param keeps it injection-safe; plain `SET` can't take a
     # placeholder for the value.
+    # We set ef.search, that is env variable, to :ef just for the particular
+    # transaction (is_local=true). This enables us to dinamically try many :ef
     await session.execute(
         text("SELECT set_config('hnsw.ef_search', :ef, true)"),
         {"ef": str(settings.retrieval_hnsw_ef_search)},
