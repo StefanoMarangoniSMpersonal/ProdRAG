@@ -11,20 +11,33 @@ Broker-only (no result backend):
     return value is never awaited — so Celery has nothing to store. Redis carries the
     queue and nothing else; Postgres stays the single source of truth for job state.
 
-Sync task over an async pipeline (the bridge):
-    A Celery task is a plain synchronous function, but `orchestrate` is a coroutine. We
-    bridge with `asyncio.run(orchestrate(id))`, which spins up a fresh event loop per
-    task, runs the pipeline to completion, and tears the loop down.
+Sync task over an async pipeline (the bridge) — ONE persistent loop per worker:
+    A Celery task is a plain synchronous function, but `orchestrate` is a coroutine, so
+    the task has to drive a loop. The naive bridge is `asyncio.run(orchestrate(id))`,
+    which spins up a *fresh* event loop per task and tears it down after. That is the
+    source of a whole class of "used across a closed loop" bugs (see the trap below), so
+    instead the worker creates ONE event loop at process startup (`worker_process_init`)
+    and reuses it for every task via `loop.run_until_complete(...)`. Under `--pool=solo`
+    tasks run sequentially in one thread, so a single shared loop is safe and never
+    re-entered. Eager-mode tests never fire `worker_process_init`, so `_worker_loop`
+    stays None there and `_run` falls back to `asyncio.run` — preserving the old bridge
+    behavior the (immutable) bridge test pins.
 
-The async-engine-per-loop trap (why the worker rebinds SessionLocal):
-    `app.db.engine` is created once at import with a normal connection pool. Reusing a
-    pooled asyncpg connection across the *different* event loops that `asyncio.run`
-    creates each task raises "Future attached to a different loop". So on worker startup
-    we build a NullPool engine (every session opens and closes its own connection, bound
-    to the current loop, never reused) and install it onto orchestrate's module-level
-    `SessionLocal` seam — the same swap-point the tests monkeypatch. New connection per
-    task is fine at this volume; the pooled per-worker Supabase/Supavisor URL is the
-    documented later swap, and it plugs in right here.
+The cross-loop trap this fixes (why one loop, not `asyncio.run` per task):
+    Long-lived async clients cache connections bound to *the loop that opened them*. Two
+    such clients live across tasks: (1) `app.db.engine`'s asyncpg pool, and (2) the
+    google-genai embed client's httpx keep-alive pool (cached once per process by
+    `embed._get_client`). With a fresh loop per task, task N reuses a connection opened
+    under task N-1's loop — but that loop is already closed, so closing/recycling the
+    connection calls `loop.call_soon(...)` on a dead loop and raises "Event loop is
+    closed" (embed) / "Future attached to a different loop" (asyncpg). Both were caught
+    live on the first *multi-document* worker run. One stable loop makes every pooled
+    connection's opening and closing happen on the same, still-open loop — the root fix.
+
+    We still install a NullPool `SessionLocal` at startup (below): harmless belt-and-
+    braces now that the loop is stable, and the same seam swaps in the pooled per-worker
+    Supabase/Supavisor URL later. The embed client needs no change — keeping it on one
+    loop is enough, and it stays untouched behind its `_get_client` test seam.
 """
 
 from __future__ import annotations
@@ -32,7 +45,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Coroutine
 from datetime import timedelta
+from typing import TypeVar
 
 from celery import Celery
 from celery.signals import worker_process_init
@@ -48,6 +63,27 @@ from app.models import Document
 logger = logging.getLogger("app.worker")
 
 settings = get_settings()
+
+_T = TypeVar("_T")
+
+# The one event loop this worker process runs every task on (created in
+# `worker_process_init`). Stays None in eager-mode tests, where `_run` falls back to
+# `asyncio.run`. See the module docstring for why a single persistent loop is the fix.
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run(coro: Coroutine[object, object, _T]) -> _T:
+    """Drive a coroutine to completion from a sync Celery task.
+
+    Inside a real worker, reuse the process's one persistent loop (bound connections
+    never cross a closed loop). Outside one — eager-mode tests, where
+    `worker_process_init` never fired — fall back to `asyncio.run`, the old per-call
+    bridge the immutable bridge test relies on (it must not run inside a live loop).
+    """
+    if _worker_loop is not None:
+        return _worker_loop.run_until_complete(coro)
+    return asyncio.run(coro)
+
 
 # The Celery app. Named `celery` so `celery -A app.worker worker` resolves it without an
 # explicit attribute. broker = Redis; result backend left unset (broker-only).
@@ -74,11 +110,17 @@ def _install_worker_sessionmaker(**_kwargs: object) -> None:
     """Rebind orchestrate's `SessionLocal` to a NullPool factory, once per worker.
 
     Fires only inside a real worker (not in eager-mode tests, which keep their own
-    monkeypatched SessionLocal). See the module docstring for why NullPool is required
-    when driving async SQLAlchemy from `asyncio.run` per task.
+    monkeypatched SessionLocal). Also creates the process's one persistent event loop —
+    every task runs on it (via `_run`) so pooled async connections never cross a closed
+    loop. See the module docstring.
     """
-    global SessionLocal
+    global SessionLocal, _worker_loop
     from app.ingest import orchestrate as orch
+
+    # One loop for the whole worker process, set as this thread's current loop so any
+    # library that reaches for "the" loop (asyncpg, httpx) gets the same one every task.
+    _worker_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_worker_loop)
 
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -86,7 +128,7 @@ def _install_worker_sessionmaker(**_kwargs: object) -> None:
     # factory, so install it on both seams.
     orch.SessionLocal = factory
     SessionLocal = factory
-    logger.info("worker: installed NullPool SessionLocal")
+    logger.info("worker: created persistent loop + installed NullPool SessionLocal")
 
 
 @celery.task(name="app.worker.orchestrate_task")
@@ -97,7 +139,7 @@ def orchestrate_task(document_id: str) -> None:
     `documents.status`, read via the poll.
     """
     doc_id = uuid.UUID(document_id)
-    result = asyncio.run(orchestrate(doc_id))
+    result = _run(orchestrate(doc_id))
     logger.info("orchestrate_task done document_id=%s status=%s", doc_id, result.status)
 
 
@@ -163,4 +205,4 @@ async def _reap() -> int:
 @celery.task(name="app.worker.reap_stuck_documents")
 def reap_stuck_documents() -> int:
     """Celery Beat entry point for the stuck-'processing' sweep (see `_reap`)."""
-    return asyncio.run(_reap())
+    return _run(_reap())
