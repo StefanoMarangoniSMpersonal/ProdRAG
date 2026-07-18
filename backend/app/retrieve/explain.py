@@ -28,7 +28,9 @@ import math
 import sys
 
 from app.config import get_settings
+from app.db import SessionLocal
 from app.ingest.embed import as_retrieval_query, embed_texts
+from app.retrieve.lexical import search_lexical
 from app.retrieve.retrieve import retrieve
 
 _PREVIEW_DEFAULT = 160
@@ -83,12 +85,32 @@ async def _run(query: str, k: int, preview: int) -> int:
             f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
         )
 
+    # --- Stage 3: lexical candidates ----------------------------------------------
+    # Full-text search over the same query STRING (not the vector). Called directly here
+    # because retrieve() doesn't fuse lexical until Q6 -- showing it beside the semantic
+    # list is exactly how this tracer surfaces a stage as it comes online. Unlike
+    # semantic (always k rows), lexical returns ONLY chunks whose text matches the
+    # tsquery, so it may show fewer than k, or none. Contrast the two lists: proper
+    # nouns / exact tokens that vectors rank poorly tend to surface here.
+    async with SessionLocal() as session:
+        lexical = await search_lexical(session, query, k=k)
+    print(f"\nLexical candidates (k={k}, websearch_to_tsquery + ts_rank_cd):")
+    if not lexical:
+        print("  (no text matches -- no chunk shares a lexeme with the query)")
+    for rank, sc in enumerate(lexical):
+        ch = sc.chunk
+        page = f"p{ch.page_number}" if ch.page_number is not None else "p?"
+        etype = ch.element_type or "-"
+        print(
+            f"[{rank:>3}] rank={sc.score:.6f} doc={str(ch.document_id)[:8]} "
+            f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
+        )
+
     # --- timings + not-yet-wired stages -------------------------------------------
     print("\n" + "-" * 60)
     print(f"timings_ms : {result.timings_ms}")
     print(
-        "later stages: lexical (Q5) / RRF fusion (Q6) / rerank (Q7) / "
-        "generate (Q8) -- not yet wired"
+        "later stages: RRF fusion (Q6) / rerank (Q7) / generate (Q8) -- not yet wired"
     )
     return 0
 

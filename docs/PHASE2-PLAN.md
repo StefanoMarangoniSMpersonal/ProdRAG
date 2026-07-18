@@ -149,10 +149,20 @@ Medical Center, NovaBridge, Port Kessler, Valdoria, …) staged under `eval/corp
 corpus docs, then re-run `build_golden.py`. Keep the golden Q&A un-ingested. Rationale in
 `docs/learning/Q4-retrieval-eval.md`.
 
-### Q5 — Lexical retrieval (Postgres full-text)
+### Q5 — Lexical retrieval (Postgres full-text)  ✅ DONE (2026-07-18)
 - **Code:** `app/retrieve/lexical.py` — `async def search_lexical(session, query_text, *, k) ->
   list[ScoredChunk]` via `websearch_to_tsquery('english', q)` against `chunks.tsv`, ranked by
   `ts_rank_cd`. Re-run Q4 eval, record the delta.
+- **Landed:** `search_lexical` mirrors `search_semantic` (same seams/return/score direction);
+  `@@` match predicate → returns ONLY matches (may be <k or 0), the key contrast with semantic.
+  Wired into `explain.py` (semantic + lexical side by side). NOT wired into `retrieve()` — that
+  is Q6 (fusion). Tests `test_lexical.py` (5): exact-token + non-match exclusion, `ts_rank_cd`
+  order, k-truncate, `or` operator (pins `websearch_to_tsquery`), owner filter. Suite 68+3, 0-skip.
+- **Lexical-standalone eval** (throwaway adapter, harness stays semantic-only by design):
+  MRR **0.344** · hit@1 **0.333** · hit@3/5/10 **0.354** vs semantic 0.881/0.792/0.979/1.000 —
+  **30/48 questions get 0 matches** (AND default on NL questions). Expected: lexical is
+  complementary, its real delta is hybrid-vs-semantic at **Q6**. Full write-up:
+  `docs/learning/Q5-full-text.md`.
 - **Teaching note** (`Q5-full-text.md`): what lexical catches that vectors miss (proper nouns,
   acronyms, code, exact IDs); `tsvector`/`tsquery`; `websearch_to_tsquery` (Google-style user input)
   vs `plainto_`/`to_tsquery`; `ts_rank` vs `ts_rank_cd`; the BM25 caveat again.
