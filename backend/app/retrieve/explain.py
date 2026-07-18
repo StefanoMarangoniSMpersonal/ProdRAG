@@ -7,12 +7,12 @@ blind; this is the window into it. Read-only: it queries, it never writes.
 Usage:
     python -m app.retrieve.explain "<query>" [--k N] [--preview N]
 
-It shows each signal separately AND the fused output of the project's own `retrieve()`
+It shows each signal separately AND the final output of the project's own `retrieve()`
 (it does NOT reimplement retrieval): the semantic and lexical arms are called directly,
-so you see what each contributes, then `retrieve()` is driven to show the RRF-fused
-ranking those two produce (Q6). As later stages land inside `retrieve` — cross-encoder
-rerank (Q7), grounded generation (Q8) — this tracer shows them with no rework; they're
-listed as "not yet wired" to keep the output shape stable as the pipeline grows.
+so you see what each contributes, then `retrieve()` is driven to show what it actually
+returns — the RRF-fused ranking (Q6), or, when `rerank_enabled`, that pool after the
+cross-encoder reranks it (Q7). The grounded generation stage (Q8) is still listed as
+"not yet wired" so the output shape stays stable as the pipeline grows.
 
 Note on the embedding line: `retrieve()` embeds the query internally (and reports it as
 `embed_ms`). To *display* the query vector's shape and confirm it's unit-length, this
@@ -108,14 +108,23 @@ async def _run(query: str, k: int, preview: int) -> int:
             f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
         )
 
-    # --- Stage 4: fused result (RRF) ----------------------------------------------
-    # Drive the REAL retrieve() -- this is the pipeline, not a re-implementation. Its
-    # chunks are the two arms above fused by Reciprocal Rank Fusion; `score` here is the
-    # RRF fused score (rank-based), NOT cosine or ts_rank_cd. Compare this order to the
-    # arms: a chunk both signals rank highly is promoted; when lexical is empty this
-    # matches the semantic arm exactly.
+    # --- Stage 4: final retrieve() output (RRF, then cross-encoder rerank if on) ---
+    # Drive the REAL retrieve() -- this is the pipeline, not a re-implementation. With
+    # rerank OFF, its chunks are the two arms above fused by RRF and `score` is the RRF
+    # value (rank-based, NOT cosine/ts_rank_cd). With rerank ON, retrieve() fetches a
+    # wider pool, fuses it, then a cross-encoder re-scores query+passage jointly and
+    # returns the top-k -- so `score` is the reranker's logit and the order can differ
+    # from the fused arms (that reordering is the point of Q7). Compare with the arms.
     result = await retrieve(query, k=k)
-    print(f"\nFused result (RRF, k_constant={settings.retrieval_rrf_k_constant}):")
+    if settings.rerank_enabled:
+        print(
+            f"\nFinal result (RRF pool={settings.retrieval_candidate_k} -> rerank "
+            f"[{settings.rerank_model}], top {k}):"
+        )
+        score_label = "score"
+    else:
+        print(f"\nFused result (RRF, k_constant={settings.retrieval_rrf_k_constant}):")
+        score_label = "rrf"
     if not result.chunks:
         print("  (no chunks -- is anything ingested for this owner?)")
     for rank, sc in enumerate(result.chunks):
@@ -123,14 +132,18 @@ async def _run(query: str, k: int, preview: int) -> int:
         page = f"p{ch.page_number}" if ch.page_number is not None else "p?"
         etype = ch.element_type or "-"
         print(
-            f"[{rank:>3}] rrf={sc.score:.6f} doc={str(ch.document_id)[:8]} "
+            f"[{rank:>3}] {score_label}={sc.score:.6f} doc={str(ch.document_id)[:8]} "
             f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
         )
 
     # --- timings + not-yet-wired stages -------------------------------------------
     print("\n" + "-" * 60)
     print(f"timings_ms : {result.timings_ms}")
-    print("later stages: rerank (Q7) / generate (Q8) -- not yet wired")
+    if not settings.rerank_enabled:
+        print(
+            "note: rerank is OFF (set RERANK_ENABLED=true to see Q7 reorder the pool)"
+        )
+    print("later stages: generate (Q8) -- not yet wired")
     return 0
 
 

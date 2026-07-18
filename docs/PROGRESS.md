@@ -5,19 +5,20 @@
 > Companion to `docs/CHANGELOG.md` (append-only history), `docs/HANDOFF.md` (session
 > state), and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-17 — **Phase 2 retrieval: Q1–Q4 COMPLETE; semantic-only eval baseline RECORDED.**
-> Q4's harness is pushed in two commits — `77e831b` (corpus + 48-Q `golden_questions.md`) + `e69af7a`
-> (`/eval` package). **This session:** the 8 corpus docs were **ingested** (9 docs / 97 chunks in the dev
-> DB), `build_golden` ran, `eval/golden.jsonl` was hand-reviewed and APPROVED, and `eval.run` ran clean
-> over all 48 Q → `eval/results/retrieval-20260717T124400_884165Z.json`: **MRR 0.881 · hit@1 0.792 ·
-> hit@3 0.979 · hit@5 0.979 · hit@10 1.000** (semantic-only). Reading: recall is maxed at k=10; the gap is
-> top-rank precision (hit@1), which Q5/Q6/Q7 target. **The worker cross-loop bug is fixed & COMMITTED
-> (`6730c34`), now live-proven** by the multi-doc corpus ingest — the first *multi-document* worker run had
-> crashed with "Event loop is closed" (the google-genai httpx keep-alive pool reused across the
-> fresh-per-task loops `asyncio.run` creates); Option C runs every task on **one persistent event loop** per
-> process (`worker_process_init` creates it; `_run` reuses it, `asyncio.run` fallback in eager tests). `main`
-> is at `e69af7a`; `6730c34` (worker fix) + the baseline-artifacts commit are local, not yet pushed. Offline
-> suite = **63 pass + 3 deselected (live), 0 skip**. **Next = Q5** (lexical retrieval)._
+> _Last updated: 2026-07-18 — **Phase 2 retrieval: Q1–Q7 COMPLETE; cross-encoder rerank landed and its
+> eval delta RECORDED.** Q7 added `app/retrieve/rerank.py` — a **local** cross-encoder
+> (`cross-encoder/ms-marco-MiniLM-L-6-v2`) loaded through the **already-installed** `transformers`
+> (torch is present via `unstructured[pdf]`) → **zero new pip deps**, ~90 MB one-time model download.
+> `retrieve()` gained a gated pool-widen → rerank → truncate branch (fetch `retrieval_candidate_k`=50, RRF
+> fuse, cross-encoder re-scores, top-`k` out); **gated OFF by default** so rerank-off is byte-identical to
+> Q6 and the immutable Q3/fuse specs stayed green untouched. Eval (rerank ON,
+> `eval/results/retrieval-20260718T192246_887014Z.json`): **MRR 0.927 · hit@1 0.896 · hit@3 0.938 · hit@5
+> 1.000 · hit@10 1.000** vs the Q6 hybrid baseline (0.895 / 0.812 / 0.979 / 0.979 / 1.000): **+0.032 MRR,
+> +0.084 hit@1** (5 Q promoted to rank 1), hit@5 perfected — **accepted a −0.041 hit@3 regression** (2 Q
+> dropped from top-3: id 22 rank 1→4, id 47) as a net win on the target lever (architect decision). Provider
+> ADR: `docs/adr/0001-reranker-provider.md`; note: `docs/learning/Q7-rerank.md`. Offline suite = **81 pass +
+> 3 deselected (live), 0 skip**; ruff + black clean. Q1–Q6 committed through `716c4a2`; **Q7 uncommitted at
+> time of writing.** **Next = Q8** (grounded generation + citations — carries a generation-model ADR)._
 
 ## How to read the scores
 
@@ -39,14 +40,14 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
-| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~15% | **~28%** |
+| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~50% | **~58%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~65% | **~76%** |
-| 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~10% | **~28%** |
+| 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~20% | **~35%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
 | 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~15% | **~28%** |
 
-**Weighted overall: ~27–29% (code-only) · ~44% (code + design).**
+**Weighted overall: ~32–34% (code-only) · ~49% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -78,21 +79,29 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    only unit-tested, no result introspection/Flower, and the worker still uses a direct DB connection
    (Supavisor pooled-worker URL is the documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
-5. **Query pipeline** — **Phase 2 in progress (Q1–Q4 COMPLETE; semantic baseline recorded).** Q1 landed the *storage
-   substrate* (HNSW + `tsv`, see Layer 6); Q2 was the first query CODE (`search_semantic`, naive
+5. **Query pipeline** — **Phase 2 in progress (Q1–Q6 COMPLETE; hybrid baseline recorded).** Q1 landed the
+   *storage substrate* (HNSW + `tsv`, see Layer 6); Q2 was the first query CODE (`search_semantic`, naive
    cosine vector search over a query *vector*); **Q3 is the first end-to-end read** —
    `app/retrieve/retrieve.py` `retrieve(query: str) → RetrievalResult` turns a query *string* into
-   ranked chunks (embeds it in the RETRIEVAL_QUERY role, owns `SessionLocal`, calls `search_semantic`,
-   carries per-stage timings), and the `app/retrieve/explain.py` CLI now backs the `explain-retrieval`
-   skill (proven live against the dev DB). Entire pipeline shape is locked (hybrid → RRF →
-   cross-encoder → 5–10 chunks); the approved Q1–Q10 breakdown is `docs/PHASE2-PLAN.md`. **Q4 landed
-   the eval ruler** (`/eval` package: pure hit@k/MRR metrics + `run.py` harness over the real
-   `retrieve()` + `build_golden.py` regenerator) and **the semantic-only baseline is now RECORDED**
-   (2026-07-17, 48 Q / 9 docs / 97 chunks): **MRR 0.881 · hit@1 0.792 · hit@3 0.979 · hit@10 1.000** in
-   `eval/results/retrieval-20260717T124400_884165Z.json` — every later stage's delta is scored against
-   it. The **corpus-expansion gate is satisfied** (golden set 15 → 48 Q over 9 docs; 8 new docs
-   ingested), and `eval/golden.jsonl` is built + approved. Recall is maxed at k=10, so the open lever is
-   top-rank precision (hit@1) — exactly what **Q5** (lexical, next) → Q6 (RRF) → Q7 (rerank) target.
+   ranked chunks (embeds it in the RETRIEVAL_QUERY role, owns `SessionLocal`, carries per-stage timings),
+   and the `app/retrieve/explain.py` CLI now backs the `explain-retrieval` skill (proven live). Q4 landed
+   the **eval ruler** (`/eval`: pure hit@k/MRR metrics + `run.py` harness over the real `retrieve()` +
+   `build_golden.py` regenerator) and the semantic-only baseline (2026-07-17, 48 Q / 9 docs / 97 chunks):
+   MRR 0.881 · hit@1 0.792 · hit@10 1.000. **Q5 built the lexical arm** (`app/retrieve/lexical.py`
+   `search_lexical` — `websearch_to_tsquery` `@@` + `ts_rank_cd` over `chunks.tsv`; standalone, MRR 0.344
+   alone — weak by design, its value is *complementary*). **Q6 fused the two signals** —
+   `app/retrieve/fuse.py` `reciprocal_rank_fusion` (rank-based, scale-free, `k_constant=60`) with
+   `retrieve()` rewired to run both arms CONCURRENTLY (`asyncio.gather`, one session per arm) and fuse by
+   RRF; the score on each `ScoredChunk` is now the RRF fused score, not cosine. **Hybrid baseline RECORDED**
+   (2026-07-18, `eval/results/retrieval-20260718T140608_833817Z.json`): **MRR 0.895 · hit@1 0.812 · hit@3
+   0.979 · hit@10 1.000** — **+0.014 MRR / +0.020 hit@1 over semantic, zero regression**. **Q7 then added
+   the cross-encoder rerank** (`app/retrieve/rerank.py`, a local `ms-marco-MiniLM-L-6-v2` via the
+   already-installed `transformers`; gated OFF by default, so rerank-off = Q6): `retrieve()` fetches a wider
+   pool (`retrieval_candidate_k`=50), RRF fuses it, the cross-encoder re-scores query+passage jointly, top-`k`
+   out. Eval (rerank ON): **MRR 0.927 · hit@1 0.896 · hit@5 1.000** (+0.032 MRR / +0.084 hit@1, 5 Q promoted
+   to rank 1), with an **accepted −0.041 hit@3 regression** (net win on the target lever; architect decision).
+   Entire pipeline shape is locked (hybrid → RRF → cross-encoder → generate); approved Q1–Q10 breakdown in
+   `docs/PHASE2-PLAN.md`. **Next = Q8 (grounded generation + citations).**
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -104,9 +113,10 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    `task_type` field — `gemini-embedding-2` dropped it. Model ID **confirmed** via the live test,
    and the **batch contract** now proven against the real API: each input must be its own
    `types.Content` (a bare `list[str]` is read as one multi-part input → one fused vector) —
-   caught 2026-07-07 by the live end-to-end run, invisible to the offline mock. LLM generation,
-   reranker, Guardrails, LangGraph still unbuilt (Phase 2); the query-side `as_retrieval_query`
-   call lands with retrieval.
+   caught 2026-07-07 by the live end-to-end run, invisible to the offline mock. **The reranker is now
+   built (Q7)** — a local cross-encoder (`ms-marco-MiniLM-L-6-v2`) run through the already-installed
+   `transformers` (zero new deps), the first non-embedding ML model in the query path. LLM generation,
+   Guardrails, LangGraph still unbuilt (Q8+); the generation client (Q8) reuses the `google-genai` SDK.
 8. **Auth & isolation** — biggest design-vs-code gap. JWKS/ES256 verification, the RLS policy
    pattern, the Supavisor-bypasses-RLS caveat, and `owner_id NOT NULL` are all decided &
    documented; only enforcement code is missing.
@@ -115,9 +125,11 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 10. **Observability & Eval** — **retrieval eval now has code AND a recorded baseline** (Q4): the `/eval`
     package with pure hit@k/MRR metrics, the `run.py` harness that scores the real `retrieve()` and writes
     baseline result files, and the source-scoped `build_golden.py`. The golden set source (the 5-column
-    `golden_questions.md`, 48 Q + 10 traps) is turned into `golden.jsonl` by the regenerator, and the
-    **first semantic baseline is recorded** (2026-07-17, `eval/results/retrieval-20260717T124400_884165Z.json`:
-    MRR 0.881 · hit@1 0.792 · hit@10 1.000). Still missing: RAGAS answer-eval (Q9), tracing
+    `golden_questions.md`, 48 Q + 10 traps) is turned into `golden.jsonl` by the regenerator, and **two
+    baselines are now recorded** in `eval/results/`: the semantic-only ruler
+    (2026-07-17, `retrieval-20260717T124400_884165Z.json`: MRR 0.881 · hit@1 0.792 · hit@10 1.000) and the
+    hybrid `retrieve()` after Q6 (2026-07-18, `retrieval-20260718T140608_833817Z.json`: MRR 0.895 · hit@1
+    0.812 · hit@10 1.000). Still missing: RAGAS answer-eval (Q9), tracing
     (LangSmith/Sentry), the per-query query log (Q10). Logging contract + "eval as substrate" strategy
     predate this.
 
@@ -148,10 +160,10 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 | Q1 | Schema switch-on: HNSW index + generated `tsv tsvector` + GIN index (migration `003`; `Chunk.tsv` mapped; conftest globs all migrations) | ✅ complete & verified, committed `f53a596` — `test_retrieve_schema.py`; note `docs/learning/Q1-indexes.md`; dev DB migrated in place, no re-ingest |
 | Q2 | Semantic retrieval — `app/retrieve/semantic.py` `search_semantic → list[ScoredChunk]`, cosine order, `ef_search` knob | ✅ complete & verified, committed — new `app/retrieve/` pkg (`types.py` shared `ScoredChunk`; `semantic.py`); score = cosine similarity (`1 − dist`); `ef_search` via `set_config`; owner = visibility seam; `test_semantic.py` (4 tests) + `docs/learning/Q2-semantic-search.md`; suite 42+2 |
 | Q3 | Retrieval orchestrator + query embedding (`retrieve() → RetrievalResult`); wire `explain-retrieval` semantic stage | ✅ complete & verified — `app/retrieve/retrieve.py` `retrieve(query, *, k=None, owner_id)` wraps query in RETRIEVAL_QUERY role → owns `SessionLocal` → `search_semantic`; `RetrievalResult` (query/chunks/timings) in shared `types.py`; `Settings.retrieval_k=10`; module seams; `explain.py` CLI backs the skill; `test_retrieve.py` (4 tests) + note `Q3-query-embedding.md`; suite 46+2; live trace ran on dev DB. Committed `3fcc2f7` (pushed) |
-| Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ✅ **COMPLETE — baseline recorded 2026-07-17.** Harness pushed (`77e831b` corpus + `e69af7a` harness): `eval/metrics.py` (pure hit@k/RR/MRR), `eval/run.py` (`python -m eval.run` → hit@{1,3,5,10}+MRR, timestamped results JSON), `eval/build_golden.py` (regenerator: expected-answer→chunk_id, **source-scoped** to the answer's own file, re-run after re-ingest); traps deferred to Q8; source = 5-column `eval/golden_questions.md` (48 Q + 10 traps); `pytest.ini` `pythonpath = . backend`; `test_eval_metrics.py` (13) + `test_build_golden.py` (5); note `Q4-retrieval-eval.md`; offline suite **63+3**. **Corpus-expansion gate SATISFIED** (15→48 Q, 1→9 docs). **Live 2026-07-17:** 8 corpus docs ingested (needed the worker cross-loop fix `6730c34` — Layer 3), `eval/golden.jsonl` built + hand-approved, and `eval.run` ran clean over 48 Q → `eval/results/retrieval-20260717T124400_884165Z.json`: **MRR 0.881 · hit@1 0.792 · hit@3 0.979 · hit@5 0.979 · hit@10 1.000** (semantic-only; recall maxed at k=10, gap is hit@1). `golden.jsonl` + result JSON committed in the baseline commit (do NOT re-ingest — the approved chunk-ids must stay valid) |
-| Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ⬜ |
-| Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ⬜ |
-| Q7 | Cross-encoder rerank — retrieve-wide → rerank to 5–10; **provider decision (ADR)** | ⬜ |
+| Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ✅ **COMPLETE — baseline recorded 2026-07-17.** Harness pushed (`77e831b` corpus + `e69af7a` harness): `eval/metrics.py` (pure hit@k/RR/MRR), `eval/run.py` (`python -m eval.run` → hit@{1,3,5,10}+MRR, timestamped results JSON), `eval/build_golden.py` (regenerator: expected-answer→chunk_id, **source-scoped** to the answer's own file, re-run after re-ingest); traps deferred to Q8; source = 5-column `eval/golden_questions.md` (48 Q + 10 traps); `pytest.ini` `pythonpath = . backend`; `test_eval_metrics.py` (13) + `test_build_golden.py` (5); note `Q4-retrieval-eval.md`; offline suite **63+3**. **Corpus-expansion gate SATISFIED** (15→48 Q, 1→9 docs). **Live 2026-07-17:** 8 corpus docs ingested (needed the worker cross-loop fix `6730c34` — Layer 3), `eval/golden.jsonl` built + hand-approved, and `eval.run` ran clean over 48 Q → `eval/results/retrieval-20260717T124400_884165Z.json`: **MRR 0.881 · hit@1 0.792 · hit@3 0.979 · hit@5 0.979 · hit@10 1.000** (semantic-only; recall maxed at k=10, gap is hit@1). `golden.jsonl` + result JSON committed in `849452d` (do NOT re-ingest — the approved chunk-ids must stay valid) |
+| Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ✅ complete & verified, committed `e64dfbf` — `app/retrieve/lexical.py`: `websearch_to_tsquery('english', …) @@ tsv` match (returns ONLY matches — may be <k or 0) ranked by `ts_rank_cd` (cover-density), seams mirror `semantic.py`; wired into `explain.py` side-by-side but NOT into `retrieve()` yet (that's Q6). 5 tests (suite 68+3, 0-skip) + note `docs/learning/Q5-full-text.md` (incl. how PG full-text differs from BM25). Standalone eval MRR 0.344 / hit@1 0.333, 30/48 zero-match — weak alone, value is *complementary* (paid out only when fused) |
+| Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ✅ complete & verified, committed `716c4a2` — `app/retrieve/fuse.py` pure `reciprocal_rank_fusion(rankings, *, k_constant=60)` (rank-based, scale-free, dedup-by-summing = cross-list agreement); `retrieve()` REWIRED hybrid: embed once + `asyncio.gather(_semantic, _lexical)` **one session per arm** + fuse + top-k, graceful-degrades to semantic when lexical empty. Score is now the RRF fused value, not cosine → **architect-authorized** revision of one immutable Q3 assert. `k_constant` wired as `Settings.retrieval_rrf_k_constant`. 7 tests (suite 75+3, 0-skip) + note `docs/learning/Q6-rrf.md`. **Hybrid eval MRR 0.895 · hit@1 0.812** (+0.020 hit@1 / +0.014 MRR vs semantic, zero regression) |
+| Q7 | Cross-encoder rerank — retrieve-wide → rerank to top-k; **provider decision (ADR)** | ✅ complete & verified (uncommitted) — `app/retrieve/rerank.py`: **local** `cross-encoder/ms-marco-MiniLM-L-6-v2` via the already-installed `transformers` (**zero new deps**; ~90 MB model, lazy `@lru_cache` load, `asyncio.to_thread` off the loop, `_get_reranker` seam). `retrieve()` rewired with a **gated** pool-widen → rerank → truncate branch (`rerank_enabled` default OFF → byte-identical to Q6; `retrieval_candidate_k=50` pool; score becomes the reranker logit). `k` stays the FINAL size, so callers + the 4 immutable Q3 specs + 7 fuse specs unchanged. **ADR `docs/adr/0001-reranker-provider.md`** (rejected managed API / Gemini-as-reranker); note `docs/learning/Q7-rerank.md`. 6 tests (`test_rerank.py` 5 + `test_retrieve_rerank.py` 1); suite **81+3**, 0-skip. **Eval (rerank ON):** MRR 0.895→**0.927**, hit@1 0.812→**0.896**, hit@5 0.979→**1.000**, hit@3 0.979→0.938 (accepted 2-Q regression) — `eval/results/retrieval-20260718T192246_887014Z.json` |
 | Q8 | Generation — grounded, cited answer via a new Gemini generation client (ADR: model + citation granularity) | ⬜ |
 | Q9 | Full RAGAS answer-eval (faithfulness / relevance / context precision+recall) | ⬜ |
 | Q10 | Query API endpoint `POST /ask` (request-shaped) + per-query structured log | ⬜ |
@@ -174,20 +186,18 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **M0–M8 + Phase 2 Q1–Q4 are committed** — pushed through **`e69af7a`** (Phase 2 Q4: eval harness),
-  on top of `77e831b` (expand eval corpus: 8 docs + 48-Q golden set) → `10d305c` (de-contaminate eval
-  corpus) → `3fcc2f7` (Phase 2 Q3) → `557d71e` (changelog extraction) → `8efed87` (Q2) → `f53a596` (Q1)
-  → `729e651` (M8). **Q4's code shipped in two commits:** `77e831b` holds the corpus data (8 new docs
-  under `eval/corpus/`, the 5-column `eval/golden_questions.md`, deletion of the old
-  `eval/golden_source.md`); `e69af7a` holds the harness (`eval/` package — `metrics.py`, `run.py`,
-  source-scoped `build_golden.py`, `__init__.py`, `results/.gitkeep`), `backend/tests/test_eval_metrics.py`
-  + `test_build_golden.py`, `pytest.ini` (`pythonpath`), `docs/learning/Q4-retrieval-eval.md`, and the
-  doc refreshes. **This session (committed locally, not yet pushed):** (1) **`6730c34`** — the Option C
-  worker persistent-loop fix (`backend/app/worker.py`), verified offline **and live-proven** by the 8-doc
-  corpus ingest; (2) the **baseline commit** (landing now) — `eval/golden.jsonl` (built + hand-approved),
-  `eval/results/retrieval-20260717T124400_884165Z.json` (the recorded baseline), a 2-line Q2
-  learning-comment in `backend/app/retrieve/semantic.py`, and these `PROGRESS.md`/`HANDOFF.md` refreshes.
-  `git push` still pending. (`.vscode/settings.json` — SQLTools connection + Pylance
+- **M0–M8 + Phase 2 Q1–Q6 are committed** — the retrieval chain runs `716c4a2` (Q6 hybrid fusion) →
+  `e64dfbf` (Q5 lexical) → `849452d` (Q4 baseline artifacts) → `6730c34` (worker persistent-loop fix) →
+  `e69af7a` (Q4 harness) → `77e831b` (eval corpus: 8 docs + 48-Q golden set) → `10d305c` (de-contaminate
+  eval corpus) → `3fcc2f7` (Phase 2 Q3) → `557d71e` (changelog extraction) → `8efed87` (Q2) → `f53a596`
+  (Q1) → `729e651` (M8). **`main` and the `origin/main` tracking ref are in sync at `716c4a2`** (verified
+  this session — the Q4 baseline / worker fix that were previously unpushed have landed). **Q5** (`e64dfbf`)
+  = `backend/app/retrieve/lexical.py` + `test_lexical.py` + `explain.py` wiring + `docs/learning/Q5-full-text.md`;
+  **Q6** (`716c4a2`) = `backend/app/retrieve/fuse.py` + `test_fuse.py`, `retrieve.py` rewired hybrid, the
+  authorized 1-assert revision in `test_retrieve.py`, `config.py` `retrieval_rrf_k_constant`, `explain.py`
+  stage restructure, `docs/learning/Q6-rrf.md`, and `eval/results/retrieval-20260718T140608_833817Z.json`
+  (the hybrid baseline). **This session:** these `PROGRESS.md`/`HANDOFF.md` refreshes (docs-only; left
+  uncommitted for review). (`.vscode/settings.json` — SQLTools connection + Pylance
   `python.analysis.extraPaths` for the `app.*`/`eval.*` import roots — is git-ignored.)
 
 ## Changelog

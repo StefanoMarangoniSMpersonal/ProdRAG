@@ -3,11 +3,12 @@
 The single *end-to-end* read. Q2's `search_semantic` / Q5's `search_lexical` are pure DB
 operations over one signal each; a caller has a *question*, not a vector or a tsquery.
 `retrieve` is the stage above them that closes the gap — it embeds the query string,
-runs BOTH searches concurrently, fuses them with Reciprocal Rank Fusion (Q6), and hands
-back a `RetrievalResult`. It is the single entry point that answers "what does this
-query retrieve?", the seam the remaining stage (cross-encoder rerank, Q7) slots behind
-without changing this signature or its callers. (Started life semantic-only in Q3;
-lexical + fusion landed in Q5-Q6 behind the unchanged signature, as designed.)
+runs BOTH searches concurrently, fuses them with Reciprocal Rank Fusion (Q6), and
+(when enabled) reranks the fused pool with a cross-encoder (Q7) before handing back a
+`RetrievalResult`. It is the single entry point that answers "what does this query
+retrieve?". Every stage landed behind this ONE signature without changing it or its
+callers: semantic-only in Q3, +lexical/fusion in Q5-Q6, +rerank in Q7 — the generation
+stage (Q8) will read this result, not reshape this call.
 
 The query/document ASYMMETRY (why we don't just embed the raw string):
     An embedding model turns text into a vector, but it embeds the *same* text
@@ -42,7 +43,7 @@ Timings (the eval-substrate rule):
     discipline, same `perf_counter`/`_ms` helper as `IngestResult`.
 
 Module-level seams (SessionLocal, embed_texts, as_retrieval_query, search_semantic,
-search_lexical, reciprocal_rank_fusion):
+search_lexical, reciprocal_rank_fusion, rerank):
     Imported here as module globals rather than reached through their packages at each
     call site, so a test can monkeypatch *this module's* copy — point `SessionLocal` at
     a throwaway test container, swap `embed_texts` for a fake that never calls Gemini.
@@ -62,6 +63,7 @@ from app.ingest.embed import as_retrieval_query, embed_texts
 from app.models import DEV_OWNER_ID
 from app.retrieve.fuse import reciprocal_rank_fusion
 from app.retrieve.lexical import search_lexical
+from app.retrieve.rerank import rerank
 from app.retrieve.semantic import search_semantic
 from app.retrieve.types import RetrievalResult, ScoredChunk
 
@@ -89,12 +91,22 @@ async def retrieve(
     The `score` on each returned `ScoredChunk` is the RRF **fused** score (rank-based),
     NOT a cosine similarity or `ts_rank_cd` value — fusion discards the arms' scales.
     When the lexical arm matches nothing, RRF reduces to the semantic order, so hybrid
-    never underperforms semantic. Rerank (Q7) slots in behind this same call/signature.
+    never underperforms semantic. When `Settings.rerank_enabled` is set, the fused pool
+    (`retrieval_candidate_k` wide) is re-scored by the cross-encoder and the `score`
+    becomes the reranker's; otherwise this returns the fused top-k unchanged (Q6).
     """
     settings = get_settings()
     k = settings.retrieval_k if k is None else k
     timings: dict[str, float] = {}
     started = perf_counter()
+
+    # Pool width the arms fetch. With rerank OFF, this is just k -> the whole path
+    # below is byte-identical to Q6 (fetch k, fuse, take k). With rerank ON, the arms
+    # fetch the WIDE candidate pool: reranking a pool no bigger than k could never
+    # reorder the top-k, so the pool must be widened BEFORE the cross-encoder narrows it
+    # (retrieve-wide -> rerank-narrow). k stays the FINAL size either way, so callers
+    # never change.
+    pool_k = settings.retrieval_candidate_k if settings.rerank_enabled else k
 
     # Query STRING -> vector, in the QUERY role. One text in, one vector out ([0]). Only
     # the semantic arm needs the vector; the lexical arm searches the raw query string.
@@ -109,14 +121,14 @@ async def retrieve(
         s = perf_counter()
         async with SessionLocal() as session:
             hits = await search_semantic(
-                session, query_embedding, k=k, owner_id=owner_id
+                session, query_embedding, k=pool_k, owner_id=owner_id
             )
         return hits, _ms(s)
 
     async def _lexical() -> tuple[list[ScoredChunk], float]:
         s = perf_counter()
         async with SessionLocal() as session:
-            hits = await search_lexical(session, query, k=k, owner_id=owner_id)
+            hits = await search_lexical(session, query, k=pool_k, owner_id=owner_id)
         return hits, _ms(s)
 
     # Run both arms concurrently; record each arm's own wall time (they overlap).
@@ -127,18 +139,32 @@ async def retrieve(
 
     # Fuse by RRF (rank-based, scale-free), then map the fused ids back to their Chunk
     # objects (from either arm) and carry the RRF score on each ScoredChunk. `by_id`
-    # dedups a chunk both arms returned to a single row. Truncate the fused order to k.
+    # dedups a chunk both arms returned to one row. This is the fused candidate POOL (up
+    # to pool_k); rerank (or the plain truncation) narrows it to k below.
     f = perf_counter()
     by_id = {sc.chunk.id: sc.chunk for sc in (*sem, *lex)}
     fused = reciprocal_rank_fusion(
         [[sc.chunk.id for sc in sem], [sc.chunk.id for sc in lex]],
         k_constant=settings.retrieval_rrf_k_constant,
     )
-    chunks = [ScoredChunk(chunk=by_id[cid], score=score) for cid, score in fused[:k]]
+    fused_pool = [
+        ScoredChunk(chunk=by_id[cid], score=score) for cid, score in fused[:pool_k]
+    ]
     timings["fuse_ms"] = _ms(f)
     # search_ms = the whole fetch+fuse span (both arms, overlapped, + fusion). Kept as a
     # stable key alongside the finer semantic_ms/lexical_ms/fuse_ms breakdown.
     timings["search_ms"] = _ms(t)
+
+    # Cross-encoder rerank (Q7), gated. ON: the cross-encoder re-scores the fused pool
+    # by reading query+passage together and returns the top-k (its score replaces the
+    # RRF score). OFF: fused_pool is already length k (pool_k == k), so this is just a
+    # slice, exactly the Q6 result. Either way `chunks` is the final top-k.
+    if settings.rerank_enabled:
+        r = perf_counter()
+        chunks = await rerank(query, fused_pool, top_n=k)
+        timings["rerank_ms"] = _ms(r)
+    else:
+        chunks = fused_pool[:k]
 
     timings["total_ms"] = _ms(started)
     return RetrievalResult(query=query, chunks=chunks, timings_ms=timings)

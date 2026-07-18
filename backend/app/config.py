@@ -82,9 +82,11 @@ class Settings(BaseSettings):
     # Override via RETRIEVAL_HNSW_EF_SEARCH.
     retrieval_hnsw_ef_search: int = 40
 
-    # Default number of chunks retrieve() returns (Q3). Today it's the final result
-    # size; once cross-encoder rerank lands (Q7) it becomes the candidate-pool size that
-    # rerank truncates down to 5-10. Overridable per call and via RETRIEVAL_K.
+    # Number of chunks retrieve() returns (Q3) -- the FINAL result size, unchanged
+    # by Q7. Callers depend on it: the eval harness retrieves at k=10 and slices
+    # hit@1/3/5, and the immutable retrieve tests assert retrieve(k=N) returns N. The
+    # candidate pool the reranker sees is a SEPARATE knob (retrieval_candidate_k
+    # below). Overridable per call and via RETRIEVAL_K.
     retrieval_k: int = 10
 
     # Reciprocal Rank Fusion smoothing constant (Q6): fused_score = sum 1/(k_constant +
@@ -92,6 +94,20 @@ class Settings(BaseSettings):
     # higher flattens the weight gap between adjacent ranks (consensus matters more than
     # any one list's #1), lower sharpens it. Override via RETRIEVAL_RRF_K_CONSTANT.
     retrieval_rrf_k_constant: int = 60
+
+    # Cross-encoder rerank (Q7). rerank_enabled gates the stage: OFF (default) leaves
+    # retrieve() at exact Q6 hybrid behavior -- no torch loaded, no model download, the
+    # offline suite unaffected -- so set RERANK_ENABLED=true only for live eval / prod.
+    # When ON, each retrieval arm fetches retrieval_candidate_k candidates (the wide
+    # pool), RRF fuses them, and the cross-encoder reorders that pool down to
+    # retrieval_k. A pool of 50 comfortably covers the near-misses rerank exists to
+    # promote while keeping the forward pass to ~0.5-2 s on CPU. rerank_model is a local
+    # HuggingFace cross-encoder (loaded via the already-installed transformers; ~90 MB,
+    # cached on first use). Override via
+    # RERANK_ENABLED / RETRIEVAL_CANDIDATE_K / RERANK_MODEL.
+    rerank_enabled: bool = False
+    retrieval_candidate_k: int = 50
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     @property
     def cors_origins_list(self) -> list[str]:
