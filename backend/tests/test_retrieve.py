@@ -178,7 +178,7 @@ async def test_retrieve_k_truncates(
     assert [sc.chunk.content for sc in result.chunks] == ["chunk-0", "chunk-1"]
 
 
-# --- result shape: query echoed, timings recorded, scores are similarities ----------
+# --- result shape: query echoed, timings recorded, scores are RRF-fused (Q6) --------
 
 
 async def test_retrieve_result_shape_and_timings(
@@ -206,7 +206,11 @@ async def test_retrieve_result_shape_and_timings(
     assert result.query == "my question"
     # Every stage is timed (the eval-substrate rule: retrieval never runs silently).
     assert set(result.timings_ms) >= {"embed_ms", "search_ms", "total_ms"}
-    # Score direction: cosine SIMILARITY (higher = nearer), same as ScoredChunk (Q2).
+    # Score is the RRF FUSED score (Q6), not cosine: the lexical arm matches nothing
+    # here (content "near"/"orthogonal" share no lexeme with "my question"), so fusion
+    # reduces to the semantic order -> "near" is rank 1, above "orthogonal", both small
+    # positive RRF values (~1/61), never the cosine 1.0/0.0 of the pre-fusion Q3 spec.
     by_content = {sc.chunk.content: sc.score for sc in result.chunks}
-    assert by_content["near"] == pytest.approx(1.0)
-    assert by_content["orthogonal"] == pytest.approx(0.0)
+    assert result.chunks[0].chunk.content == "near"
+    assert by_content["near"] > by_content["orthogonal"] > 0.0
+    assert by_content["near"] < 1.0

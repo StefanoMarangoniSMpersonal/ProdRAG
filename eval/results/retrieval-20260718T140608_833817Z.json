@@ -1,0 +1,1280 @@
+{
+  "summary": {
+    "n_questions": 48,
+    "mrr": 0.8946759259259259,
+    "hit_rate@1": 0.8125,
+    "hit_rate@3": 0.9791666666666666,
+    "hit_rate@5": 0.9791666666666666,
+    "hit_rate@10": 1.0
+  },
+  "metadata": {
+    "ks": [
+      1,
+      3,
+      5,
+      10
+    ],
+    "generated_at": "2026-07-18T14:06:08.700052+00:00",
+    "owner_id": "00000000-0000-0000-0000-000000000000",
+    "corpus_docs": 9,
+    "corpus_chunks": 97,
+    "git_sha": "e64dfbf",
+    "embedding_model": "gemini-embedding-2",
+    "golden_path": "eval/golden.jsonl"
+  },
+  "per_query": [
+    {
+      "id": 1,
+      "question": "Who is the CEO of Aurelia Robotics?",
+      "relevant_chunk_ids": [
+        34,
+        37
+      ],
+      "retrieved_chunk_ids": [
+        37,
+        34,
+        39,
+        43,
+        38,
+        35,
+        42,
+        36,
+        41,
+        40
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 2,
+      "question": "What is the battery life of the Sparrow Mini?",
+      "relevant_chunk_ids": [
+        35
+      ],
+      "retrieved_chunk_ids": [
+        35,
+        37,
+        40,
+        45,
+        36,
+        41,
+        38,
+        145,
+        166,
+        34
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 3,
+      "question": "Why was the Kestrel product line discontinued?",
+      "relevant_chunk_ids": [
+        35
+      ],
+      "retrieved_chunk_ids": [
+        35,
+        44,
+        40,
+        37,
+        117,
+        38,
+        158,
+        116,
+        119,
+        43
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 4,
+      "question": "How much did Aurelia Robotics raise in its Series C round, and who led it?",
+      "relevant_chunk_ids": [
+        37
+      ],
+      "retrieved_chunk_ids": [
+        37,
+        34,
+        39,
+        42,
+        38,
+        43,
+        35,
+        40,
+        46,
+        41
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 5,
+      "question": "Which company has a higher max payload on its large warehouse robot \u2014 Aurelia Robotics or Halcyon Dynamics?",
+      "relevant_chunk_ids": [
+        35,
+        40
+      ],
+      "retrieved_chunk_ids": [
+        39,
+        40,
+        42,
+        43,
+        37,
+        34,
+        38,
+        35,
+        36,
+        41
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 6,
+      "question": "What was the firmware version that caused the Rotterdam incident at Aurelia Robotics?",
+      "relevant_chunk_ids": [
+        38
+      ],
+      "retrieved_chunk_ids": [
+        38,
+        37,
+        34,
+        39,
+        35,
+        42,
+        43,
+        172,
+        40,
+        115
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 7,
+      "question": "Has Cedarwood & Finch ever raised venture capital?",
+      "relevant_chunk_ids": [
+        46
+      ],
+      "retrieved_chunk_ids": [
+        46,
+        43,
+        45,
+        41,
+        36,
+        42,
+        44,
+        37,
+        155,
+        96
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 8,
+      "question": "What material is the Wickham Rocking Chair made from, and what is its lead time?",
+      "relevant_chunk_ids": [
+        44
+      ],
+      "retrieved_chunk_ids": [
+        44,
+        46,
+        43,
+        34,
+        155,
+        160,
+        157,
+        95,
+        113,
+        101
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 9,
+      "question": "Who first described Luminex Syndrome, and at which institution?",
+      "relevant_chunk_ids": [
+        141
+      ],
+      "retrieved_chunk_ids": [
+        141,
+        142,
+        143,
+        130,
+        131,
+        132,
+        99,
+        136,
+        133,
+        150
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 10,
+      "question": "What percentage of Luminex patients were initially misdiagnosed with essential tremor?",
+      "relevant_chunk_ids": [
+        141
+      ],
+      "retrieved_chunk_ids": [
+        141,
+        142,
+        140,
+        130,
+        124,
+        143,
+        160,
+        43,
+        34,
+        137
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 11,
+      "question": "What drug is used to treat Luminex Syndrome, and by how much does it reduce episode frequency?",
+      "relevant_chunk_ids": [
+        142
+      ],
+      "retrieved_chunk_ids": [
+        142,
+        141,
+        143,
+        136,
+        132,
+        135,
+        137,
+        133,
+        131,
+        140
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 12,
+      "question": "What is the name of the novel luciferin variant discovered in the Kelbrin Trench?",
+      "relevant_chunk_ids": [
+        143
+      ],
+      "retrieved_chunk_ids": [
+        143,
+        146,
+        142,
+        145,
+        141,
+        144,
+        148,
+        150,
+        42,
+        120
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 13,
+      "question": "How many new bioluminescent species were catalogued during the Kelbrin Trench expedition?",
+      "relevant_chunk_ids": [
+        143,
+        145
+      ],
+      "retrieved_chunk_ids": [
+        143,
+        145,
+        146,
+        144,
+        142,
+        158,
+        141,
+        159,
+        148,
+        120
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 14,
+      "question": "At 12 months post-burn, what percentage of bacterial diversity had recovered in the burn center compared to the control site?",
+      "relevant_chunk_ids": [
+        147
+      ],
+      "retrieved_chunk_ids": [
+        147,
+        146,
+        143,
+        140,
+        148,
+        137,
+        145,
+        132,
+        130,
+        131
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 15,
+      "question": "What solar-to-hydrogen conversion efficiency did Dr. Morimoto's team achieve?",
+      "relevant_chunk_ids": [
+        148
+      ],
+      "retrieved_chunk_ids": [
+        148,
+        149,
+        150,
+        143,
+        145,
+        108,
+        98,
+        107,
+        96,
+        106
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 16,
+      "question": "What is the population of the Republic of Valdoria?",
+      "relevant_chunk_ids": [
+        103
+      ],
+      "retrieved_chunk_ids": [
+        103,
+        105,
+        110,
+        104,
+        109,
+        119,
+        108,
+        34,
+        114,
+        113
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 17,
+      "question": "What is the penalty for a first-offense violation of the DPDSA?",
+      "relevant_chunk_ids": [
+        104
+      ],
+      "retrieved_chunk_ids": [
+        104,
+        103,
+        109,
+        122,
+        105,
+        123,
+        121,
+        124,
+        128,
+        110
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 18,
+      "question": "Which three companies were fined after the DPDSA grace period expired?",
+      "relevant_chunk_ids": [
+        104
+      ],
+      "retrieved_chunk_ids": [
+        104,
+        103,
+        123,
+        121,
+        124,
+        125,
+        105,
+        122,
+        44,
+        127
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 19,
+      "question": "What percentage of Valdoria's electricity came from renewables at the time the REM was passed in 2021?",
+      "relevant_chunk_ids": [
+        105
+      ],
+      "retrieved_chunk_ids": [
+        105,
+        108,
+        103,
+        109,
+        110,
+        107,
+        113,
+        104,
+        115,
+        125
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 20,
+      "question": "What minimum salary is required for a Valdorian Blue Card visa?",
+      "relevant_chunk_ids": [
+        110
+      ],
+      "retrieved_chunk_ids": [
+        110,
+        105,
+        104,
+        103,
+        109,
+        108,
+        112,
+        113,
+        151,
+        119
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 21,
+      "question": "What is the current stable version of the NovaBridge API?",
+      "relevant_chunk_ids": [
+        165
+      ],
+      "retrieved_chunk_ids": [
+        165,
+        163,
+        164,
+        168,
+        171,
+        170,
+        169,
+        172,
+        173,
+        167
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 22,
+      "question": "What is the rate limit (requests per second) for a NovaBridge Professional tier customer?",
+      "relevant_chunk_ids": [
+        167
+      ],
+      "retrieved_chunk_ids": [
+        167,
+        168,
+        163,
+        170,
+        164,
+        166,
+        165,
+        171,
+        169,
+        172
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 23,
+      "question": "What is ForgeScript?",
+      "relevant_chunk_ids": [
+        169
+      ],
+      "retrieved_chunk_ids": [
+        169,
+        173,
+        170,
+        172,
+        163,
+        144,
+        166,
+        106,
+        155,
+        165
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 24,
+      "question": "How many pre-built connectors does NovaBridge offer, and which is the most popular?",
+      "relevant_chunk_ids": [
+        168
+      ],
+      "retrieved_chunk_ids": [
+        168,
+        163,
+        169,
+        165,
+        164,
+        171,
+        170,
+        172,
+        173,
+        112
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 25,
+      "question": "What happens after 5 consecutive webhook delivery failures on NovaBridge?",
+      "relevant_chunk_ids": [
+        171
+      ],
+      "retrieved_chunk_ids": [
+        171,
+        168,
+        163,
+        165,
+        170,
+        164,
+        169,
+        166,
+        172,
+        173
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 26,
+      "question": "When was Port Kessler founded, and by whom?",
+      "relevant_chunk_ids": [
+        114
+      ],
+      "retrieved_chunk_ids": [
+        114,
+        117,
+        118,
+        120,
+        119,
+        158,
+        159,
+        116,
+        115,
+        34
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 27,
+      "question": "How many people died in the Great Harbour Fire of 1821?",
+      "relevant_chunk_ids": [
+        115
+      ],
+      "retrieved_chunk_ids": [
+        115,
+        118,
+        117,
+        158,
+        114,
+        120,
+        116,
+        119,
+        159,
+        144
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 28,
+      "question": "How long is the Birren Canal, and how many locks does it have?",
+      "relevant_chunk_ids": [
+        116
+      ],
+      "retrieved_chunk_ids": [
+        116,
+        159,
+        120,
+        119,
+        162,
+        161,
+        158,
+        114,
+        160,
+        138
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 29,
+      "question": "What is the oldest surviving structure in Port Kessler?",
+      "relevant_chunk_ids": [
+        114
+      ],
+      "retrieved_chunk_ids": [
+        158,
+        114,
+        119,
+        118,
+        117,
+        120,
+        159,
+        115,
+        116,
+        157
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 30,
+      "question": "What did Theresa Lund win the Nobel Prize for?",
+      "relevant_chunk_ids": [
+        120
+      ],
+      "retrieved_chunk_ids": [
+        120,
+        99,
+        141,
+        150,
+        98,
+        148,
+        96,
+        157,
+        142,
+        106
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 31,
+      "question": "What was LMC's sepsis mortality rate before and after implementing the SEDB protocol?",
+      "relevant_chunk_ids": [
+        131,
+        132
+      ],
+      "retrieved_chunk_ids": [
+        131,
+        132,
+        136,
+        137,
+        133,
+        140,
+        130,
+        138,
+        139,
+        135
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 32,
+      "question": "In the LMC Pediatric Asthma Pathway, what oxygen saturation level defines \"severe\"?",
+      "relevant_chunk_ids": [
+        134
+      ],
+      "retrieved_chunk_ids": [
+        133,
+        134,
+        135,
+        136,
+        131,
+        132,
+        138,
+        137,
+        130,
+        141
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 33,
+      "question": "What is the surgical site infection rate at Lakeview Medical Center compared to the national average?",
+      "relevant_chunk_ids": [
+        137
+      ],
+      "retrieved_chunk_ids": [
+        130,
+        137,
+        136,
+        160,
+        131,
+        132,
+        140,
+        138,
+        111,
+        139
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 34,
+      "question": "What is the Briarfield Falls Scale, and what score range indicates high risk?",
+      "relevant_chunk_ids": [
+        138
+      ],
+      "retrieved_chunk_ids": [
+        138,
+        139,
+        140,
+        137,
+        160,
+        134,
+        130,
+        91,
+        131,
+        98
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 35,
+      "question": "In Thornton v. Bellweather Industries, what legal doctrine was established?",
+      "relevant_chunk_ids": [
+        123
+      ],
+      "retrieved_chunk_ids": [
+        121,
+        122,
+        123,
+        129,
+        127,
+        128,
+        125,
+        104,
+        124,
+        126
+      ],
+      "reciprocal_rank": 0.3333333333333333,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 36,
+      "question": "How much was Luminos Energy Corp. ordered to pay in total restitution in the Ashford case?",
+      "relevant_chunk_ids": [
+        124
+      ],
+      "retrieved_chunk_ids": [
+        124,
+        123,
+        125,
+        122,
+        128,
+        126,
+        121,
+        143,
+        44,
+        104
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 37,
+      "question": "In Rivera v. Stonewall Academy, why was the student expelled?",
+      "relevant_chunk_ids": [
+        125
+      ],
+      "retrieved_chunk_ids": [
+        125,
+        126,
+        127,
+        121,
+        99,
+        122,
+        90,
+        155,
+        128,
+        104
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 38,
+      "question": "What test did the court apply in Patel v. QuickDeliver Inc. to determine employment status?",
+      "relevant_chunk_ids": [
+        128
+      ],
+      "retrieved_chunk_ids": [
+        128,
+        127,
+        129,
+        121,
+        122,
+        34,
+        125,
+        126,
+        123,
+        39
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 39,
+      "question": "What is Thornfield University's endowment?",
+      "relevant_chunk_ids": [
+        90
+      ],
+      "retrieved_chunk_ids": [
+        90,
+        96,
+        102,
+        98,
+        91,
+        94,
+        95,
+        99,
+        155,
+        101
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 40,
+      "question": "What is the undergraduate acceptance rate at Thornfield?",
+      "relevant_chunk_ids": [
+        93
+      ],
+      "retrieved_chunk_ids": [
+        94,
+        102,
+        90,
+        91,
+        98,
+        96,
+        99,
+        95,
+        93,
+        155
+      ],
+      "reciprocal_rank": 0.1111111111111111,
+      "hits": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": true
+      }
+    },
+    {
+      "id": 41,
+      "question": "What is the \"Thornfield Promise\"?",
+      "relevant_chunk_ids": [
+        102
+      ],
+      "retrieved_chunk_ids": [
+        102,
+        91,
+        94,
+        99,
+        90,
+        98,
+        96,
+        155,
+        95,
+        106
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 42,
+      "question": "Which Thornfield athletic program is the most successful?",
+      "relevant_chunk_ids": [
+        98
+      ],
+      "retrieved_chunk_ids": [
+        98,
+        91,
+        99,
+        94,
+        96,
+        90,
+        95,
+        102,
+        155,
+        152
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 43,
+      "question": "Who holds the CIVL single-season assist record?",
+      "relevant_chunk_ids": [
+        154
+      ],
+      "retrieved_chunk_ids": [
+        151,
+        154,
+        155,
+        153,
+        152,
+        99,
+        98,
+        111,
+        93,
+        95
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 44,
+      "question": "How much did the Montreal Aces' David Okonkwo score in the deciding match of the 2024 CIVL Finals?",
+      "relevant_chunk_ids": [
+        154
+      ],
+      "retrieved_chunk_ids": [
+        153,
+        154,
+        151,
+        155,
+        152,
+        98,
+        157,
+        34,
+        41,
+        36
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 45,
+      "question": "Who won the 2024 Harlow Medal at the Millhaven Folk Arts Festival, and for what?",
+      "relevant_chunk_ids": [
+        157
+      ],
+      "retrieved_chunk_ids": [
+        157,
+        156,
+        155,
+        158,
+        99,
+        159,
+        162,
+        90,
+        98,
+        160
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 46,
+      "question": "How much has the Kessler Maritime Heritage Foundation raised toward its Birren Canal wing capital campaign?",
+      "relevant_chunk_ids": [
+        159
+      ],
+      "retrieved_chunk_ids": [
+        159,
+        158,
+        116,
+        119,
+        120,
+        114,
+        117,
+        118,
+        162,
+        157
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 47,
+      "question": "Comparing the two robotics companies, which one has higher 2024 revenue and by how much?",
+      "relevant_chunk_ids": [
+        36,
+        41
+      ],
+      "retrieved_chunk_ids": [
+        35,
+        36,
+        41,
+        45,
+        37,
+        40,
+        39,
+        34,
+        42,
+        43
+      ],
+      "reciprocal_rank": 0.5,
+      "hits": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": 48,
+      "question": "What was the total amount QuickDeliver was ordered to pay (back wages + civil penalty)?",
+      "relevant_chunk_ids": [
+        128
+      ],
+      "retrieved_chunk_ids": [
+        128,
+        127,
+        129,
+        122,
+        124,
+        123,
+        121,
+        126,
+        125,
+        36
+      ],
+      "reciprocal_rank": 1.0,
+      "hits": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    }
+  ]
+}

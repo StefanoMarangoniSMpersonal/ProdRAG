@@ -7,11 +7,12 @@ blind; this is the window into it. Read-only: it queries, it never writes.
 Usage:
     python -m app.retrieve.explain "<query>" [--k N] [--preview N]
 
-It drives the project's own `retrieve()` (it does NOT reimplement retrieval), so as
-later stages land inside `retrieve` — lexical (Q5), RRF fusion (Q6), cross-encoder
-rerank (Q7), grounded generation (Q8) — this tracer shows them with no rework. Today
-only the semantic stage is wired, so that's what prints; the rest are listed as "not yet
-wired" to keep the output shape stable as the pipeline grows.
+It shows each signal separately AND the fused output of the project's own `retrieve()`
+(it does NOT reimplement retrieval): the semantic and lexical arms are called directly,
+so you see what each contributes, then `retrieve()` is driven to show the RRF-fused
+ranking those two produce (Q6). As later stages land inside `retrieve` — cross-encoder
+rerank (Q7), grounded generation (Q8) — this tracer shows them with no rework; they're
+listed as "not yet wired" to keep the output shape stable as the pipeline grows.
 
 Note on the embedding line: `retrieve()` embeds the query internally (and reports it as
 `embed_ms`). To *display* the query vector's shape and confirm it's unit-length, this
@@ -32,6 +33,7 @@ from app.db import SessionLocal
 from app.ingest.embed import as_retrieval_query, embed_texts
 from app.retrieve.lexical import search_lexical
 from app.retrieve.retrieve import retrieve
+from app.retrieve.semantic import search_semantic
 
 _PREVIEW_DEFAULT = 160
 
@@ -68,15 +70,16 @@ async def _run(query: str, k: int, preview: int) -> int:
         f"|v|={norm:.4f}  head=[{head}, ...]"
     )
 
-    # --- Stage 2: semantic candidates ---------------------------------------------
-    # Drive the real retrieve() -- this is the pipeline, not a re-implementation.
-    result = await retrieve(query, k=k)
-    print(
-        f"\nSemantic candidates (k={k}, ef_search={settings.retrieval_hnsw_ef_search}):"
-    )
-    if not result.chunks:
+    # --- Stage 2: semantic arm ----------------------------------------------------
+    # Called directly (not via retrieve()) so we see the PURE semantic ranking -- what
+    # this signal contributes on its own, before fusion reorders it. Reuses the vector
+    # embedded above. Semantic always returns up to k rows (nearest, relevant or not).
+    async with SessionLocal() as session:
+        semantic = await search_semantic(session, vec, k=k)
+    print(f"\nSemantic arm (k={k}, ef_search={settings.retrieval_hnsw_ef_search}):")
+    if not semantic:
         print("  (no chunks -- is anything ingested for this owner?)")
-    for rank, sc in enumerate(result.chunks):
+    for rank, sc in enumerate(semantic):
         ch = sc.chunk
         page = f"p{ch.page_number}" if ch.page_number is not None else "p?"
         etype = ch.element_type or "-"
@@ -85,16 +88,15 @@ async def _run(query: str, k: int, preview: int) -> int:
             f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
         )
 
-    # --- Stage 3: lexical candidates ----------------------------------------------
-    # Full-text search over the same query STRING (not the vector). Called directly here
-    # because retrieve() doesn't fuse lexical until Q6 -- showing it beside the semantic
-    # list is exactly how this tracer surfaces a stage as it comes online. Unlike
-    # semantic (always k rows), lexical returns ONLY chunks whose text matches the
-    # tsquery, so it may show fewer than k, or none. Contrast the two lists: proper
-    # nouns / exact tokens that vectors rank poorly tend to surface here.
+    # --- Stage 3: lexical arm -----------------------------------------------------
+    # Full-text search over the same query STRING (not the vector), called directly to
+    # show the pure lexical ranking. Unlike semantic (always up to k rows), lexical
+    # returns ONLY chunks whose text matches the tsquery, so it may show fewer than k,
+    # or none. Contrast the two: proper nouns / exact tokens that vectors rank poorly
+    # surface here, often above where semantic put them -- that's what fusion exploits.
     async with SessionLocal() as session:
         lexical = await search_lexical(session, query, k=k)
-    print(f"\nLexical candidates (k={k}, websearch_to_tsquery + ts_rank_cd):")
+    print(f"\nLexical arm (k={k}, websearch_to_tsquery + ts_rank_cd):")
     if not lexical:
         print("  (no text matches -- no chunk shares a lexeme with the query)")
     for rank, sc in enumerate(lexical):
@@ -106,12 +108,29 @@ async def _run(query: str, k: int, preview: int) -> int:
             f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
         )
 
+    # --- Stage 4: fused result (RRF) ----------------------------------------------
+    # Drive the REAL retrieve() -- this is the pipeline, not a re-implementation. Its
+    # chunks are the two arms above fused by Reciprocal Rank Fusion; `score` here is the
+    # RRF fused score (rank-based), NOT cosine or ts_rank_cd. Compare this order to the
+    # arms: a chunk both signals rank highly is promoted; when lexical is empty this
+    # matches the semantic arm exactly.
+    result = await retrieve(query, k=k)
+    print(f"\nFused result (RRF, k_constant={settings.retrieval_rrf_k_constant}):")
+    if not result.chunks:
+        print("  (no chunks -- is anything ingested for this owner?)")
+    for rank, sc in enumerate(result.chunks):
+        ch = sc.chunk
+        page = f"p{ch.page_number}" if ch.page_number is not None else "p?"
+        etype = ch.element_type or "-"
+        print(
+            f"[{rank:>3}] rrf={sc.score:.6f} doc={str(ch.document_id)[:8]} "
+            f"ord={ch.ordinal:<3} {page:>4} {etype:<14} {_preview(ch.content, preview)}"
+        )
+
     # --- timings + not-yet-wired stages -------------------------------------------
     print("\n" + "-" * 60)
     print(f"timings_ms : {result.timings_ms}")
-    print(
-        "later stages: RRF fusion (Q6) / rerank (Q7) / generate (Q8) -- not yet wired"
-    )
+    print("later stages: rerank (Q7) / generate (Q8) -- not yet wired")
     return 0
 
 

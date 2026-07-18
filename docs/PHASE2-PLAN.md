@@ -169,15 +169,30 @@ corpus docs, then re-run `build_golden.py`. Keep the golden Q&A un-ingested. Rat
 - **Test (`test_lexical.py`):** seed chunks including an exact rare token; a query for that token
   returns the right chunk (a case semantic search would rank poorly), ranked and `k`-truncated.
 
-### Q6 — Hybrid fusion (Reciprocal Rank Fusion)
-- **Code:** `app/retrieve/fuse.py` — pure `reciprocal_rank_fusion(rankings: list[list[ChunkId]], *,
-  k_constant=60) -> list[ChunkId]`. Update `retrieve()` to run semantic + lexical **concurrently**
-  (`asyncio.gather`) and fuse. Re-run eval, record delta.
+### Q6 — Hybrid fusion (Reciprocal Rank Fusion)  ✅ DONE (2026-07-18)
+- **Code:** `app/retrieve/fuse.py` — pure `reciprocal_rank_fusion(rankings: list[list[int]], *,
+  k_constant=60) -> list[tuple[int, float]]`. Update `retrieve()` to run semantic + lexical
+  **concurrently** (`asyncio.gather`) and fuse. Re-run eval, record delta.
+- **Landed:** pure `reciprocal_rank_fusion` returns `(id, score)` pairs (richer than the planned
+  bare id list, so `retrieve()` carries the RRF score onto each `ScoredChunk`); dedup-by-sum,
+  tie-break `(-score, id)`. `retrieve()` embeds once, runs both arms via `asyncio.gather` with a
+  **session per arm** (one connection can't serve two concurrent queries), fuses, returns top-k;
+  timings add `semantic_ms`/`lexical_ms`/`fuse_ms` and **retain `search_ms`**. Score semantics
+  changed: `ScoredChunk.score` is now the RRF value, not cosine — **architect-authorized revision**
+  of `test_retrieve.py`'s Q3 score assertion (the only sanctioned test edit). `k_constant=60` wired
+  as `Settings.retrieval_rrf_k_constant`. `explain.py` restructured: semantic arm + lexical arm +
+  fused RRF shown side by side. **Graceful degradation:** lexical-empty → fusion = semantic order,
+  so hybrid never underperforms semantic.
+- **Eval (hybrid vs semantic baseline):** MRR **0.881 → 0.895**, hit@1 **0.792 → 0.812**, hit@3/10
+  unchanged (0.979 / 1.000) — **+1 question to rank 1, zero regression**
+  (`eval/results/retrieval-20260718T140608_833817Z.json`). Small because 30/48 questions get no
+  lexical signal and semantic was already strong on the small clean corpus; the real jump is
+  expected at Q7. Full write-up: `docs/learning/Q6-rrf.md`.
 - **Teaching note** (`Q6-rrf.md`): the RRF formula `Σ 1/(k_constant + rank)`; **why RRF over
   score-normalization** (scale-free — semantic distances and `ts_rank` scores aren't comparable);
   the `k=60` origin (Cormack et al.); dedup across lists.
-- **Test (`test_fuse.py`):** hand-crafted rankings → known fused order. Pure function, no DB — the
-  cleanest red/green teaching unit in the phase.
+- **Test (`test_fuse.py`):** hand-crafted rankings → known fused order (7 tests). Pure function,
+  no DB — the cleanest red/green teaching unit in the phase. Suite 75+3, 0-skip.
 
 ### Q7 — Cross-encoder rerank  ← provider decision made here
 - **Code:** `app/retrieve/rerank.py` — `async def rerank(query, chunks, *, top_n) ->

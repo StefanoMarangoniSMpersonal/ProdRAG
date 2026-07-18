@@ -1,12 +1,13 @@
 """Q3 — retrieve: a query STRING -> the ranked chunks that answer it.
 
-The first *end-to-end* read. Q2's `search_semantic` is a pure DB operation: it takes a
-query **vector** and returns the nearest chunks. But a caller has a *question*, not a
-vector. `retrieve` is the stage above `search_semantic` that closes that gap — it embeds
-the query string, runs the search, and hands back a `RetrievalResult`. It is the single
-entry point that answers "what does this query retrieve?", and the seam every later
-stage slots behind (lexical Q5, RRF fusion Q6, rerank Q7) without changing this
-signature or its callers.
+The single *end-to-end* read. Q2's `search_semantic` / Q5's `search_lexical` are pure DB
+operations over one signal each; a caller has a *question*, not a vector or a tsquery.
+`retrieve` is the stage above them that closes the gap — it embeds the query string,
+runs BOTH searches concurrently, fuses them with Reciprocal Rank Fusion (Q6), and hands
+back a `RetrievalResult`. It is the single entry point that answers "what does this
+query retrieve?", the seam the remaining stage (cross-encoder rerank, Q7) slots behind
+without changing this signature or its callers. (Started life semantic-only in Q3;
+lexical + fusion landed in Q5-Q6 behind the unchanged signature, as designed.)
 
 The query/document ASYMMETRY (why we don't just embed the raw string):
     An embedding model turns text into a vector, but it embeds the *same* text
@@ -25,12 +26,14 @@ Why `embed_texts([...])[0]`:
     (Passing a batch of one, rather than a scalar API, also dodges the v2 gotcha where a
     bare multi-part input collapses into a single fused vector; see the embed module.)
 
-Owns its own session (the orchestrate.py contract):
-    `search_semantic` takes a `session` because it's a pure query and shouldn't care
-    where the connection comes from. `retrieve` is the orchestrator, so — exactly like
-    the ingest-side `orchestrate` — it opens the session itself via `SessionLocal`. A
-    request handler (Q10 `/ask`) or a CLI (`explain.py`) just calls `retrieve(query)`;
-    connection lifecycle is not their problem.
+Owns its sessions (the orchestrate.py contract):
+    `search_semantic`/`search_lexical` each take a `session` because they are pure
+    queries and shouldn't care where the connection comes from. `retrieve` is the
+    orchestrator, so — like the ingest-side `orchestrate` — it opens the sessions via
+    `SessionLocal`. It opens TWO, one per arm: a single async connection can't run two
+    queries concurrently, so the arms each get their own so `asyncio.gather` can overlap
+    them. A request handler (Q10 `/ask`) or a CLI (`explain.py`) just calls
+    `retrieve(query)`; connection lifecycle is not their problem.
 
 Timings (the eval-substrate rule):
     `RetrievalResult.timings_ms` records the wall-clock ms of each stage. Retrieval is
@@ -38,7 +41,8 @@ Timings (the eval-substrate rule):
     timings feed logs, the `explain-retrieval` skill, and later the eval harness. Same
     discipline, same `perf_counter`/`_ms` helper as `IngestResult`.
 
-Module-level seams (SessionLocal, embed_texts, as_retrieval_query, search_semantic):
+Module-level seams (SessionLocal, embed_texts, as_retrieval_query, search_semantic,
+search_lexical, reciprocal_rank_fusion):
     Imported here as module globals rather than reached through their packages at each
     call site, so a test can monkeypatch *this module's* copy — point `SessionLocal` at
     a throwaway test container, swap `embed_texts` for a fake that never calls Gemini.
@@ -48,6 +52,7 @@ Module-level seams (SessionLocal, embed_texts, as_retrieval_query, search_semant
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from time import perf_counter
 
@@ -55,8 +60,10 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.ingest.embed import as_retrieval_query, embed_texts
 from app.models import DEV_OWNER_ID
+from app.retrieve.fuse import reciprocal_rank_fusion
+from app.retrieve.lexical import search_lexical
 from app.retrieve.semantic import search_semantic
-from app.retrieve.types import RetrievalResult
+from app.retrieve.types import RetrievalResult, ScoredChunk
 
 
 def _ms(since: float) -> float:
@@ -70,31 +77,67 @@ async def retrieve(
     k: int | None = None,
     owner_id: uuid.UUID = DEV_OWNER_ID,
 ) -> RetrievalResult:
-    """Retrieve the `k` chunks most relevant to `query`, end to end.
+    """Retrieve the `k` chunks most relevant to `query`, end to end (hybrid).
 
-    Embeds `query` in the RETRIEVAL_QUERY role, runs semantic (vector) search over the
-    owner's chunks, and returns a `RetrievalResult` (the query echoed, the ranked chunks
-    with cosine-similarity scores, and per-stage timings). `k` defaults to
+    Embeds `query` in the RETRIEVAL_QUERY role, runs semantic (vector) and lexical
+    (full-text) search CONCURRENTLY over the owner's chunks, fuses the two rankings with
+    Reciprocal Rank Fusion, and returns a `RetrievalResult` (the query echoed, the fused
+    top-`k` chunks each carrying its RRF score, and per-stage timings). `k` defaults to
     `Settings.retrieval_k`; `owner_id` is the visibility-predicate seam forwarded to
-    `search_semantic` (today the owner = me boundary; future RLS/role filtering).
+    both arms (today the owner = me boundary; future RLS/role filtering).
 
-    Naive-first: semantic only. Lexical + RRF fusion + rerank slot in behind this same
-    call in Q5-Q7 without changing the signature or any caller.
+    The `score` on each returned `ScoredChunk` is the RRF **fused** score (rank-based),
+    NOT a cosine similarity or `ts_rank_cd` value — fusion discards the arms' scales.
+    When the lexical arm matches nothing, RRF reduces to the semantic order, so hybrid
+    never underperforms semantic. Rerank (Q7) slots in behind this same call/signature.
     """
     settings = get_settings()
     k = settings.retrieval_k if k is None else k
     timings: dict[str, float] = {}
     started = perf_counter()
 
-    # Query STRING -> vector, in the QUERY role. One text in, one vector out ([0]).
+    # Query STRING -> vector, in the QUERY role. One text in, one vector out ([0]). Only
+    # the semantic arm needs the vector; the lexical arm searches the raw query string.
     t = perf_counter()
     query_embedding = (await embed_texts([as_retrieval_query(query)]))[0]
     timings["embed_ms"] = _ms(t)
 
-    # Own the session (orchestrator contract); search_semantic is the pure query below.
+    # Each arm opens its OWN session: one async DB connection can't service two queries
+    # at once, so the two concurrent arms can't share a session. Each search is a pure
+    # query (it takes the session); retrieve owns the sessions (orchestrate contract).
+    async def _semantic() -> tuple[list[ScoredChunk], float]:
+        s = perf_counter()
+        async with SessionLocal() as session:
+            hits = await search_semantic(
+                session, query_embedding, k=k, owner_id=owner_id
+            )
+        return hits, _ms(s)
+
+    async def _lexical() -> tuple[list[ScoredChunk], float]:
+        s = perf_counter()
+        async with SessionLocal() as session:
+            hits = await search_lexical(session, query, k=k, owner_id=owner_id)
+        return hits, _ms(s)
+
+    # Run both arms concurrently; record each arm's own wall time (they overlap).
     t = perf_counter()
-    async with SessionLocal() as session:
-        chunks = await search_semantic(session, query_embedding, k=k, owner_id=owner_id)
+    (sem, timings["semantic_ms"]), (lex, timings["lexical_ms"]) = await asyncio.gather(
+        _semantic(), _lexical()
+    )
+
+    # Fuse by RRF (rank-based, scale-free), then map the fused ids back to their Chunk
+    # objects (from either arm) and carry the RRF score on each ScoredChunk. `by_id`
+    # dedups a chunk both arms returned to a single row. Truncate the fused order to k.
+    f = perf_counter()
+    by_id = {sc.chunk.id: sc.chunk for sc in (*sem, *lex)}
+    fused = reciprocal_rank_fusion(
+        [[sc.chunk.id for sc in sem], [sc.chunk.id for sc in lex]],
+        k_constant=settings.retrieval_rrf_k_constant,
+    )
+    chunks = [ScoredChunk(chunk=by_id[cid], score=score) for cid, score in fused[:k]]
+    timings["fuse_ms"] = _ms(f)
+    # search_ms = the whole fetch+fuse span (both arms, overlapped, + fusion). Kept as a
+    # stable key alongside the finer semantic_ms/lexical_ms/fuse_ms breakdown.
     timings["search_ms"] = _ms(t)
 
     timings["total_ms"] = _ms(started)

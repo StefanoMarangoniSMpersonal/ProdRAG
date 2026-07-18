@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     # rerank truncates down to 5-10. Overridable per call and via RETRIEVAL_K.
     retrieval_k: int = 10
 
+    # Reciprocal Rank Fusion smoothing constant (Q6): fused_score = sum 1/(k_constant +
+    # rank) across the semantic + lexical rankings. 60 is the Cormack et al. default;
+    # higher flattens the weight gap between adjacent ranks (consensus matters more than
+    # any one list's #1), lower sharpens it. Override via RETRIEVAL_RRF_K_CONSTANT.
+    retrieval_rrf_k_constant: int = 60
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
