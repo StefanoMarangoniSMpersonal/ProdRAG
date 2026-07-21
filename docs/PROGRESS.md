@@ -5,20 +5,25 @@
 > Companion to `docs/CHANGELOG.md` (append-only history), `docs/HANDOFF.md` (session
 > state), and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-18 — **Phase 2 retrieval: Q1–Q7 COMPLETE; cross-encoder rerank landed and its
-> eval delta RECORDED.** Q7 added `app/retrieve/rerank.py` — a **local** cross-encoder
-> (`cross-encoder/ms-marco-MiniLM-L-6-v2`) loaded through the **already-installed** `transformers`
-> (torch is present via `unstructured[pdf]`) → **zero new pip deps**, ~90 MB one-time model download.
-> `retrieve()` gained a gated pool-widen → rerank → truncate branch (fetch `retrieval_candidate_k`=50, RRF
-> fuse, cross-encoder re-scores, top-`k` out); **gated OFF by default** so rerank-off is byte-identical to
-> Q6 and the immutable Q3/fuse specs stayed green untouched. Eval (rerank ON,
-> `eval/results/retrieval-20260718T192246_887014Z.json`): **MRR 0.927 · hit@1 0.896 · hit@3 0.938 · hit@5
-> 1.000 · hit@10 1.000** vs the Q6 hybrid baseline (0.895 / 0.812 / 0.979 / 0.979 / 1.000): **+0.032 MRR,
-> +0.084 hit@1** (5 Q promoted to rank 1), hit@5 perfected — **accepted a −0.041 hit@3 regression** (2 Q
-> dropped from top-3: id 22 rank 1→4, id 47) as a net win on the target lever (architect decision). Provider
-> ADR: `docs/adr/0001-reranker-provider.md`; note: `docs/learning/Q7-rerank.md`. Offline suite = **81 pass +
-> 3 deselected (live), 0 skip**; ruff + black clean. Q1–Q6 committed through `716c4a2`; **Q7 uncommitted at
-> time of writing.** **Next = Q8** (grounded generation + citations — carries a generation-model ADR)._
+> _Last updated: 2026-07-21 — **Phase 2 retrieval: Q1–Q8 COMPLETE; grounded, cited generation landed.**
+> Q8 added `app/generate/generate.py` — `generate(query, chunks) → GeneratedAnswer`, the final read-path
+> stage. Three grounding levers: a **system instruction** (answer only from context / say "I don't know" /
+> cite chunk ids), **temperature 0**, and **structured JSON output** (`response_schema=GeneratedAnswer`, a
+> Pydantic model reused as both schema and parse target); **chunk-level citations** (`list[int]` of
+> `chunk.id`); empty-context → local refusal with **no billable call**. Model `gemini-3.1-flash-lite`; the
+> embed + generation clients were unified into a shared `app/gemini_client.py` (one process-cached client,
+> honoring the worker one-loop httpx discipline) with `embed.py` importing it under its old `_get_client`
+> name so its immutable tests stayed green. **No new pip dep.** The 10-trap **refusal eval**
+> (`eval/refusal.py` + `eval/build_traps.py` → `traps.jsonl`) ran live: the model **hallucinated 0/10**, but
+> the keyword `is_refusal` metric scored 8/10 — a **correct grounded negation** carries no refusal phrase and
+> one real refusal was phrased off-list. **Architect decision (relabel now, judge in Q9):** report it as an
+> `explicit_refusal_rate` **lower bound** + a `non_refusals` **review queue**, NOT a hallucination count; the
+> robust semantic verdict is Q9's LLM-as-judge. ADR `docs/adr/0002-generation.md`; note
+> `docs/learning/Q8-generation.md`; result `eval/results/refusal-20260721T092240_787936Z.json` (re-run on
+> 2026-07-21 so the committed artifact carries the honest field names — the earlier runs still said
+> "hallucinations: 2"). Offline suite = **94 pass + 4 deselected (live), 0 skip**; ruff + black clean.
+> **Q1–Q7 committed through `a67a4a4`; Q8 lands in this commit.** **Next = Q9** (full RAGAS answer-eval —
+> the LLM-as-judge the trap run proved is needed)._
 
 ## How to read the scores
 
@@ -40,14 +45,14 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
-| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~50% | **~58%** |
+| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~62% | **~68%** |
 | 6 | Data & storage | Postgres+pgvector, schema, blob store | ~65% | **~76%** |
-| 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~20% | **~35%** |
+| 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~30% | **~44%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
-| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~15% | **~28%** |
+| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~18% | **~31%** |
 
-**Weighted overall: ~32–34% (code-only) · ~49% (code + design).**
+**Weighted overall: ~35–37% (code-only) · ~51% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -100,8 +105,14 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    pool (`retrieval_candidate_k`=50), RRF fuses it, the cross-encoder re-scores query+passage jointly, top-`k`
    out. Eval (rerank ON): **MRR 0.927 · hit@1 0.896 · hit@5 1.000** (+0.032 MRR / +0.084 hit@1, 5 Q promoted
    to rank 1), with an **accepted −0.041 hit@3 regression** (net win on the target lever; architect decision).
-   Entire pipeline shape is locked (hybrid → RRF → cross-encoder → generate); approved Q1–Q10 breakdown in
-   `docs/PHASE2-PLAN.md`. **Next = Q8 (grounded generation + citations).**
+   **Q8 closed the read path with generation** — `app/generate/generate.py` `generate(query, chunks) →
+   GeneratedAnswer` turns ranked chunks into a grounded, cited answer via three levers (system instruction /
+   temperature 0 / structured JSON `response_schema`), **chunk-level citations** (`list[int]` of `chunk.id`),
+   and a no-billable-call refusal on empty context. The refusal eval over the 10 traps ran live: **0/10
+   hallucinations**, with the keyword metric honestly relabelled an `explicit_refusal_rate` lower bound
+   (robust judgment deferred to Q9). Entire pipeline shape is now built end to end (hybrid → RRF →
+   cross-encoder → generate); approved Q1–Q10 breakdown in `docs/PHASE2-PLAN.md`. **Next = Q9 (full RAGAS
+   answer-eval — the LLM-as-judge).**
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -115,8 +126,11 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    `types.Content` (a bare `list[str]` is read as one multi-part input → one fused vector) —
    caught 2026-07-07 by the live end-to-end run, invisible to the offline mock. **The reranker is now
    built (Q7)** — a local cross-encoder (`ms-marco-MiniLM-L-6-v2`) run through the already-installed
-   `transformers` (zero new deps), the first non-embedding ML model in the query path. LLM generation,
-   Guardrails, LangGraph still unbuilt (Q8+); the generation client (Q8) reuses the `google-genai` SDK.
+   `transformers` (zero new deps), the first non-embedding ML model in the query path. **LLM generation is
+   now wired (Q8)** — `app/generate/generate.py` calls Gemini `gemini-3.1-flash-lite` via the shared
+   `app/gemini_client.py` (embed + generation now share one process-cached client) with a grounding system
+   instruction, temperature 0, and structured JSON output (`response_schema=GeneratedAnswer`). Reuses the
+   `google-genai` SDK → no new dep. Guardrails, LangGraph still unbuilt (Phase 2.5).
 8. **Auth & isolation** — biggest design-vs-code gap. JWKS/ES256 verification, the RLS policy
    pattern, the Supavisor-bypasses-RLS caveat, and `owner_id NOT NULL` are all decided &
    documented; only enforcement code is missing.
@@ -129,9 +143,13 @@ The gap between the two numbers *is the story*: design risk is bought down befor
     baselines are now recorded** in `eval/results/`: the semantic-only ruler
     (2026-07-17, `retrieval-20260717T124400_884165Z.json`: MRR 0.881 · hit@1 0.792 · hit@10 1.000) and the
     hybrid `retrieve()` after Q6 (2026-07-18, `retrieval-20260718T140608_833817Z.json`: MRR 0.895 · hit@1
-    0.812 · hit@10 1.000). Still missing: RAGAS answer-eval (Q9), tracing
-    (LangSmith/Sentry), the per-query query log (Q10). Logging contract + "eval as substrate" strategy
-    predate this.
+    0.812 · hit@10 1.000). **Q8 added the first answer-side eval** — `eval/refusal.py` over the 10 traps
+    (`eval/results/refusal-20260721T092240_787936Z.json`), a deliberately coarse `explicit_refusal_rate`
+    **lower bound** (keyword `is_refusal`) plus a `non_refusals` review queue. The trap run surfaced the
+    metric's own limit — a keyword check can't tell a correct grounded negation from a fabrication — which is
+    exactly the case for the **RAGAS faithfulness LLM-as-judge in Q9** (recorded in the
+    `eval-metrics-honest-labeling` memory). Still missing: RAGAS answer-eval (Q9), tracing (LangSmith/Sentry),
+    the per-query query log (Q10). Logging contract + "eval as substrate" strategy predate this.
 
 ## Ingestion milestones (Layer 4 detail)
 
@@ -163,8 +181,8 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 | Q4 | Retrieval eval baseline — `/eval` package, `golden.jsonl`, hit@k / MRR (woven eval begins) | ✅ **COMPLETE — baseline recorded 2026-07-17.** Harness pushed (`77e831b` corpus + `e69af7a` harness): `eval/metrics.py` (pure hit@k/RR/MRR), `eval/run.py` (`python -m eval.run` → hit@{1,3,5,10}+MRR, timestamped results JSON), `eval/build_golden.py` (regenerator: expected-answer→chunk_id, **source-scoped** to the answer's own file, re-run after re-ingest); traps deferred to Q8; source = 5-column `eval/golden_questions.md` (48 Q + 10 traps); `pytest.ini` `pythonpath = . backend`; `test_eval_metrics.py` (13) + `test_build_golden.py` (5); note `Q4-retrieval-eval.md`; offline suite **63+3**. **Corpus-expansion gate SATISFIED** (15→48 Q, 1→9 docs). **Live 2026-07-17:** 8 corpus docs ingested (needed the worker cross-loop fix `6730c34` — Layer 3), `eval/golden.jsonl` built + hand-approved, and `eval.run` ran clean over 48 Q → `eval/results/retrieval-20260717T124400_884165Z.json`: **MRR 0.881 · hit@1 0.792 · hit@3 0.979 · hit@5 0.979 · hit@10 1.000** (semantic-only; recall maxed at k=10, gap is hit@1). `golden.jsonl` + result JSON committed in `849452d` (do NOT re-ingest — the approved chunk-ids must stay valid) |
 | Q5 | Lexical retrieval — `search_lexical` via `websearch_to_tsquery` + `ts_rank_cd` over `chunks.tsv` | ✅ complete & verified, committed `e64dfbf` — `app/retrieve/lexical.py`: `websearch_to_tsquery('english', …) @@ tsv` match (returns ONLY matches — may be <k or 0) ranked by `ts_rank_cd` (cover-density), seams mirror `semantic.py`; wired into `explain.py` side-by-side but NOT into `retrieve()` yet (that's Q6). 5 tests (suite 68+3, 0-skip) + note `docs/learning/Q5-full-text.md` (incl. how PG full-text differs from BM25). Standalone eval MRR 0.344 / hit@1 0.333, 30/48 zero-match — weak alone, value is *complementary* (paid out only when fused) |
 | Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ✅ complete & verified, committed `716c4a2` — `app/retrieve/fuse.py` pure `reciprocal_rank_fusion(rankings, *, k_constant=60)` (rank-based, scale-free, dedup-by-summing = cross-list agreement); `retrieve()` REWIRED hybrid: embed once + `asyncio.gather(_semantic, _lexical)` **one session per arm** + fuse + top-k, graceful-degrades to semantic when lexical empty. Score is now the RRF fused value, not cosine → **architect-authorized** revision of one immutable Q3 assert. `k_constant` wired as `Settings.retrieval_rrf_k_constant`. 7 tests (suite 75+3, 0-skip) + note `docs/learning/Q6-rrf.md`. **Hybrid eval MRR 0.895 · hit@1 0.812** (+0.020 hit@1 / +0.014 MRR vs semantic, zero regression) |
-| Q7 | Cross-encoder rerank — retrieve-wide → rerank to top-k; **provider decision (ADR)** | ✅ complete & verified (uncommitted) — `app/retrieve/rerank.py`: **local** `cross-encoder/ms-marco-MiniLM-L-6-v2` via the already-installed `transformers` (**zero new deps**; ~90 MB model, lazy `@lru_cache` load, `asyncio.to_thread` off the loop, `_get_reranker` seam). `retrieve()` rewired with a **gated** pool-widen → rerank → truncate branch (`rerank_enabled` default OFF → byte-identical to Q6; `retrieval_candidate_k=50` pool; score becomes the reranker logit). `k` stays the FINAL size, so callers + the 4 immutable Q3 specs + 7 fuse specs unchanged. **ADR `docs/adr/0001-reranker-provider.md`** (rejected managed API / Gemini-as-reranker); note `docs/learning/Q7-rerank.md`. 6 tests (`test_rerank.py` 5 + `test_retrieve_rerank.py` 1); suite **81+3**, 0-skip. **Eval (rerank ON):** MRR 0.895→**0.927**, hit@1 0.812→**0.896**, hit@5 0.979→**1.000**, hit@3 0.979→0.938 (accepted 2-Q regression) — `eval/results/retrieval-20260718T192246_887014Z.json` |
-| Q8 | Generation — grounded, cited answer via a new Gemini generation client (ADR: model + citation granularity) | ⬜ |
+| Q7 | Cross-encoder rerank — retrieve-wide → rerank to top-k; **provider decision (ADR)** | ✅ complete & verified, committed `a67a4a4` — `app/retrieve/rerank.py`: **local** `cross-encoder/ms-marco-MiniLM-L-6-v2` via the already-installed `transformers` (**zero new deps**; ~90 MB model, lazy `@lru_cache` load, `asyncio.to_thread` off the loop, `_get_reranker` seam). `retrieve()` rewired with a **gated** pool-widen → rerank → truncate branch (`rerank_enabled` default OFF → byte-identical to Q6; `retrieval_candidate_k=50` pool; score becomes the reranker logit). `k` stays the FINAL size, so callers + the 4 immutable Q3 specs + 7 fuse specs unchanged. **ADR `docs/adr/0001-reranker-provider.md`** (rejected managed API / Gemini-as-reranker); note `docs/learning/Q7-rerank.md`. 6 tests (`test_rerank.py` 5 + `test_retrieve_rerank.py` 1); suite **81+3**, 0-skip. **Eval (rerank ON):** MRR 0.895→**0.927**, hit@1 0.812→**0.896**, hit@5 0.979→**1.000**, hit@3 0.979→0.938 (accepted 2-Q regression) — `eval/results/retrieval-20260718T192246_887014Z.json` |
+| Q8 | Generation — grounded, cited answer via a new Gemini generation client (ADR: model + citation granularity) | ✅ complete & verified (this commit) — `app/generate/generate.py`: `generate(query, chunks) → GeneratedAnswer` (Pydantic `answer: str` + `citations: list[int]`). Three grounding levers: **system instruction** (only-from-context / say "I don't know" / cite chunk ids), **temperature 0**, **structured JSON** (`response_mime_type="application/json"` + `response_schema=GeneratedAnswer`, same class as schema *and* parse target). **Chunk-level citations** (`chunk.id`; char-span deferred). Empty context → local refusal, **no billable call**. Model `gemini-3.1-flash-lite` (env `GENERATION_MODEL`, temp/max-tokens Settings). Embed + generation unified into shared `app/gemini_client.py` (one process-cached client; `embed.py` keeps `_get_client` alias → immutable embed tests untouched). **No new pip dep.** ADR `docs/adr/0002-generation.md`; note `docs/learning/Q8-generation.md`. **Refusal eval** — `eval/refusal.py` + `eval/build_traps.py` (→ `traps.jsonl`) over 10 traps; live run **0/10 hallucinations**, keyword metric relabelled `explicit_refusal_rate` **lower bound** + `non_refusals` review queue (architect: relabel now, judge in Q9); `eval/results/refusal-20260721T092240_787936Z.json`. Tests: `test_generate.py` (6, incl. 1 live), `test_refusal.py` (5), `test_refusal_report.py` (3); suite **94+4**, 0-skip |
 | Q9 | Full RAGAS answer-eval (faithfulness / relevance / context precision+recall) | ⬜ |
 | Q10 | Query API endpoint `POST /ask` (request-shaped) + per-query structured log | ⬜ |
 
@@ -196,8 +214,15 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   **Q6** (`716c4a2`) = `backend/app/retrieve/fuse.py` + `test_fuse.py`, `retrieve.py` rewired hybrid, the
   authorized 1-assert revision in `test_retrieve.py`, `config.py` `retrieval_rrf_k_constant`, `explain.py`
   stage restructure, `docs/learning/Q6-rrf.md`, and `eval/results/retrieval-20260718T140608_833817Z.json`
-  (the hybrid baseline). **This session:** these `PROGRESS.md`/`HANDOFF.md` refreshes (docs-only; left
-  uncommitted for review). (`.vscode/settings.json` — SQLTools connection + Pylance
+  (the hybrid baseline); **Q7** (`a67a4a4`) = `backend/app/retrieve/rerank.py` + `test_rerank.py` +
+  `test_retrieve_rerank.py`, the gated `retrieve.py` branch, `config.py` rerank settings, `explain.py`,
+  ADR 0001, `docs/learning/Q7-rerank.md`, and `eval/results/retrieval-20260718T192246_887014Z.json`.
+  **Q8 (generation) lands in THIS commit** — `app/generate/`, `app/gemini_client.py`, the
+  `embed.py`/`config.py` edits, `eval/refusal.py` + `eval/build_traps.py` + `traps.jsonl`, the three test
+  files, ADR 0002, the Q8 note, and **one** `refusal-*.json` result (the 2026-07-21 re-run; the two
+  earlier runs were discarded because they carried the pre-relabel `hallucinations` field the current
+  reporter deliberately no longer emits). **This session:** Q8 implementation + these
+  `PROGRESS.md`/`HANDOFF.md` refreshes. (`.vscode/settings.json` — SQLTools connection + Pylance
   `python.analysis.extraPaths` for the `app.*`/`eval.*` import roots — is git-ignored.)
 
 ## Changelog

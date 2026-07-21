@@ -65,34 +65,15 @@ SDK surface (google-genai, verified against 2.10.0 — batch shape re-verified l
 from __future__ import annotations
 
 import math
-from functools import lru_cache
-from typing import TYPE_CHECKING
 
 from app.config import get_settings
 
-if TYPE_CHECKING:
-    # Type-only import (see parse.py): keeps `import app.ingest.embed` instant; the SDK
-    # is imported lazily, only when an embed actually runs.
-    from google.genai import Client
-
-
-@lru_cache
-def _get_client() -> Client:
-    """Build the google-genai client once per process from the API key in settings.
-
-    Cached because the client is reusable and holds config; there's no reason to
-    rebuild it per call. Raises a clear error (rather than a deep SDK one) if the key
-    is missing, since that's the single most likely misconfiguration.
-    """
-    from google import genai
-
-    settings = get_settings()
-    if not settings.gemini_api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set — the embedding stage (M4) needs a Gemini API "
-            "key. Put it in backend/.env (never in code)."
-        )
-    return genai.Client(api_key=settings.gemini_api_key)
+# The google-genai client now lives in the shared `app.gemini_client` module (one cached
+# client per process, shared with the Q8 generation stage — see that module's docstring
+# for the loop-bound-connection-pool reason it must be a singleton). Imported under the
+# original `_get_client` name so this module's behavior — and its immutable tests, which
+# monkeypatch `embed._get_client` — are unchanged by the move.
+from app.gemini_client import get_client as _get_client
 
 
 def _l2_normalize(vector: list[float]) -> list[float]:

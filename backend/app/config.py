@@ -109,6 +109,18 @@ class Settings(BaseSettings):
     retrieval_candidate_k: int = 50
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # Generation (Q8). The final RAG stage: a Gemini *generation* model turns the
+    # retrieved chunks into a grounded, cited answer (reuses the same google-genai SDK +
+    # GEMINI_API_KEY as embedding — no second key). generation_model is the model id
+    # (architect-locked default; a config swap behind the generate() seam).
+    # generation_temperature stays 0 for grounded extraction — we want faithful answers
+    # from context, not creative ones, so determinism beats variety.
+    # generation_max_output_tokens caps the answer length. Override via
+    # GENERATION_MODEL / GENERATION_TEMPERATURE / GENERATION_MAX_OUTPUT_TOKENS.
+    generation_model: str = "gemini-3.1-flash-lite"
+    generation_temperature: float = 0.0
+    generation_max_output_tokens: int = 1024
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

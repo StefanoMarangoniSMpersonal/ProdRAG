@@ -1,6 +1,6 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-18._
+_Last updated: 2026-07-21._
 
 This file holds only **what's live and what's next**. Per-milestone detail, seam shapes,
 rationale, and gotchas live in the code, `docs/PROGRESS.md` (layer % tracker),
@@ -23,7 +23,7 @@ Scope for Phase 2 = a working `POST /ask`; LangGraph, Guardrails, and streaming 
   orchestrator → eval harness (hit@k / MRR) → lexical (full-text) → **hybrid RRF fusion**.
   `retrieve()` runs semantic + lexical concurrently and fuses by Reciprocal Rank Fusion.
   Committed & pushed through `716c4a2`.
-- **Phase 2 Q7 — cross-encoder rerank (DONE, this session, uncommitted at time of writing).**
+- **Phase 2 Q7 — cross-encoder rerank (DONE, committed `a67a4a4`).**
   `app/retrieve/rerank.py`: a **local** cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
   loaded through the **already-installed** `transformers` (torch is present via `unstructured[pdf]`)
   → **zero new pip deps**, ~90 MB one-time model download. `retrieve()` gained a gated
@@ -43,19 +43,39 @@ Scope for Phase 2 = a working `POST /ask`; LangGraph, Guardrails, and streaming 
   > comparison). Architect decision (2026-07-18): a net win on the target lever; keep MiniLM, the
   > model is a config swap behind the `rerank` seam if hit@3 ever matters more.
 
-- Offline test suite: **81 pass + 3 deselected (live)**, 0 skip; ruff + black clean on `app/`.
+- **Phase 2 Q8 — grounded, cited generation (DONE, lands in this commit).**
+  `app/generate/generate.py`: `generate(query, chunks) → GeneratedAnswer` — the final read-path
+  stage, turning ranked `ScoredChunk`s into an answer drawn **only from context**. Three grounding
+  levers: a **system instruction** (answer only from context / say "I don't know" / cite chunk ids),
+  **temperature 0**, and **structured JSON output** (`response_mime_type="application/json"` +
+  `response_schema=GeneratedAnswer`, a Pydantic model reused as both the schema and the parse
+  target). **Chunk-level citations** (`citations: list[int]` of `chunk.id`; char-span deferred).
+  Empty-context → local refusal, **no billable call**. Model `gemini-3.1-flash-lite` (env
+  `GENERATION_MODEL`). The embed + generation clients were unified into a shared
+  `app/gemini_client.py` (one process-cached client, honoring the worker's one-loop httpx
+  discipline); `embed.py` imports it under its old `_get_client` name → its immutable tests stayed
+  green. ADR `docs/adr/0002-generation.md`; teaching note `docs/learning/Q8-generation.md`. **No
+  new pip dep** (reuses `google-genai`).
+- **Refusal eval — the 10 traps (T1–T10), live-run once.** `eval/refusal.py` runs each trap through
+  retrieve → generate; `eval/build_traps.py` emits `eval/traps.jsonl`. Latest live run
+  (`eval/results/refusal-20260721T092240_787936Z.json`): **model hallucinated 0/10** — but the
+  keyword `is_refusal` metric only scored 8/10, because a **correct grounded negation** ("Thornfield
+  has no football program", cited) carries no refusal phrase, and one genuine refusal was phrased
+  off the keyword list. **Architect decision (relabel now, judge in Q9):** the metric is honestly
+  reported as an `explicit_refusal_rate` **lower bound** with a `non_refusals` **review queue** — it
+  is NOT a hallucination count. `is_refusal` and its immutable test are left exactly as a coarse
+  explicit-refusal tripwire; robust fabricated-vs-grounded judgment is Q9's LLM-as-judge job. (See
+  the `eval-metrics-honest-labeling` memory.)
+- Offline test suite: **94 pass + 4 deselected (live)**, 0 skip; ruff + black clean on `app/`.
 
 ## Immediate next step
 
-**Q8 — generation (grounded, cited answer).** A NEW Gemini *generation* client (only the
-*embedding* client exists today; reuses the `google-genai` SDK → no new dep) in
-`app/generate/generate.py`. System instruction: answer **only from provided context**, say "I
-don't know" when it's absent, **cite source chunk IDs**. Pydantic model for structured
-`{answer, citations[]}`. Module-level seam, mirroring the retrieve stages. Carries an **ADR**
-(generation model id; citation granularity chunk-level vs char-span) — **an architecture
-decision, ask the architect before coding.** Also folds in the 10 **trap** questions (deferred
-from Q4) for a refusal eval. Ship test-first + `docs/learning/Q8-*.md`. Full breakdown: Q8 in
-`docs/PHASE2-PLAN.md`.
+**Q9 — full RAGAS answer-eval (faithfulness / answer relevance / context precision·recall).** The
+robust, semantic verdict that Q8's keyword refusal check deliberately punts on: an **LLM-as-judge**
+that can separate a correct grounded negation from a fabrication (the exact gap the trap run
+exposed). Adds reference/ground-truth answers to the golden set and scores the real
+`retrieve → generate` path over the 48 answerable Q. Ship test-first + `docs/learning/Q9-*.md`.
+Full breakdown: Q9 in `docs/PHASE2-PLAN.md`. (Q10 = `POST /ask` + per-query log closes Phase 2.)
 
 ## Open blockers / cautions
 
@@ -95,6 +115,12 @@ from Q4) for a refusal eval. Ship test-first + `docs/learning/Q8-*.md`. Full bre
   That measures the **hybrid (Q6)** pipeline. To measure **with Q7 rerank**, prepend
   `$env:RERANK_ENABLED="true";` (first run downloads the ~90 MB cross-encoder to
   `~/.cache/huggingface`, then ~0.5–2 s/query CPU). Rerank is OFF by default everywhere else.
+- **Refusal eval (Q8, live)** — needs Postgres + `GEMINI_API_KEY`:
+  `backend\.venv\Scripts\python.exe -m eval.refusal` runs the 10 traps through retrieve → generate
+  and writes a timestamped `eval/results/refusal-*.json`. The headline number is an
+  `explicit_refusal_rate` **lower bound** (keyword-based); eyeball the `non_refusals` review queue
+  for any actually-fabricated answer. Regenerate the trap set (if `golden_questions.md` changes)
+  with `python -m eval.build_traps`.
 - **Inspect the dev DB:** `docker exec -it prodrag-postgres psql -U prodrag -d prodrag`, or VS Code
   SQLTools; ready queries in `infra/db/explore.sql`.
 - **Curl on Windows:** use `curl.exe`, not bare `curl` (aliased to `Invoke-WebRequest`).

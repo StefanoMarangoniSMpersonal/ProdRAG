@@ -1,0 +1,219 @@
+{
+  "summary": {
+    "n_traps": 10,
+    "explicit_refusals": 8,
+    "non_refusals": 2,
+    "explicit_refusal_rate": 0.8
+  },
+  "per_trap": [
+    {
+      "id": "T1",
+      "question": "Who is the CTO of Cedarwood & Finch?",
+      "refused": true,
+      "answer": "I don't know. The provided context does not mention a CTO for Cedarwood & Finch; it only lists Owen Bramblett as CEO, Clara Bramblett as Head of Design, and Marcus Whitfield as Operations Manager.",
+      "citations": [
+        43,
+        46
+      ],
+      "retrieved_chunk_ids": [
+        43,
+        46,
+        99,
+        34,
+        41,
+        39,
+        45,
+        36,
+        37,
+        44
+      ]
+    },
+    {
+      "id": "T2",
+      "question": "What color is the Falcon-9X robot?",
+      "refused": true,
+      "answer": "I don't know.",
+      "citations": [],
+      "retrieved_chunk_ids": [
+        35,
+        38,
+        37,
+        40,
+        42,
+        39,
+        34,
+        43,
+        141,
+        143
+      ]
+    },
+    {
+      "id": "T3",
+      "question": "What year was Halcyon Dynamics' Series C round?",
+      "refused": true,
+      "answer": "I don't know.",
+      "citations": [],
+      "retrieved_chunk_ids": [
+        42,
+        40,
+        37,
+        39,
+        43,
+        41,
+        35,
+        36,
+        45,
+        46
+      ]
+    },
+    {
+      "id": "T4",
+      "question": "What programming languages does ForgeScript compile to?",
+      "refused": true,
+      "answer": "I don't know. The provided context describes ForgeScript as a declarative domain-specific language (DSL) with JSON-like syntax used by the Forge data transformation engine, but it does not state that ForgeScript compiles to any specific programming languages.",
+      "citations": [
+        169
+      ],
+      "retrieved_chunk_ids": [
+        169,
+        173,
+        170,
+        172,
+        106,
+        34,
+        163,
+        155,
+        166,
+        168
+      ]
+    },
+    {
+      "id": "T5",
+      "question": "What is the name of Thornfield University's football coach?",
+      "refused": false,
+      "answer": "Thornfield University does not have a football program.",
+      "citations": [
+        98
+      ],
+      "retrieved_chunk_ids": [
+        90,
+        98,
+        91,
+        99,
+        102,
+        95,
+        96,
+        94,
+        155,
+        160
+      ]
+    },
+    {
+      "id": "T6",
+      "question": "What was Dr. Morimoto's previous institution before Kyoto University?",
+      "refused": true,
+      "answer": "I don't know.",
+      "citations": [],
+      "retrieved_chunk_ids": [
+        150,
+        148,
+        130,
+        149,
+        90,
+        96,
+        143,
+        97,
+        141,
+        146
+      ]
+    },
+    {
+      "id": "T7",
+      "question": "What is the population of Port Kessler's Eastbank district today?",
+      "refused": true,
+      "answer": "The provided context does not contain information regarding the current population of the Eastbank district.",
+      "citations": [],
+      "retrieved_chunk_ids": [
+        119,
+        117,
+        114,
+        120,
+        118,
+        158,
+        159,
+        116,
+        115,
+        108
+      ]
+    },
+    {
+      "id": "T8",
+      "question": "What was the verdict on QuickDeliver's appeal?",
+      "refused": false,
+      "answer": "The provided text does not state the verdict of QuickDeliver's appeal; it only mentions that the company announced it would appeal the ruling.",
+      "citations": [
+        128
+      ],
+      "retrieved_chunk_ids": [
+        128,
+        127,
+        129,
+        122,
+        124,
+        126,
+        121,
+        125,
+        123,
+        104
+      ]
+    },
+    {
+      "id": "T9",
+      "question": "How many beds does Lakeview Medical Center's PICU have?",
+      "refused": true,
+      "answer": "I don't know. The provided text states that Lakeview Medical Center is a 620-bed hospital and operates a pediatric intensive care unit (PICU), but it does not specify the number of beds within the PICU.",
+      "citations": [
+        130
+      ],
+      "retrieved_chunk_ids": [
+        130,
+        160,
+        133,
+        131,
+        136,
+        132,
+        135,
+        137,
+        138,
+        95
+      ]
+    },
+    {
+      "id": "T10",
+      "question": "What is the exchange rate of the Valdorian Krone to the Euro?",
+      "refused": true,
+      "answer": "I don't know. The provided context states that 1 USD is approximately 5.3 VKR as of 2024, but it does not provide an exchange rate for the Valdorian Krone to the Euro.",
+      "citations": [
+        103
+      ],
+      "retrieved_chunk_ids": [
+        103,
+        105,
+        110,
+        104,
+        109,
+        108,
+        113,
+        34,
+        159,
+        119
+      ]
+    }
+  ],
+  "metadata": {
+    "generated_at": "2026-07-21T09:22:40.686100+00:00",
+    "git_sha": "a67a4a4",
+    "generation_model": "gemini-3.1-flash-lite",
+    "traps_path": "eval/traps.jsonl"
+  }
+}
