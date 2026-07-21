@@ -43,7 +43,7 @@ Scope for Phase 2 = a working `POST /ask`; LangGraph, Guardrails, and streaming 
   > comparison). Architect decision (2026-07-18): a net win on the target lever; keep MiniLM, the
   > model is a config swap behind the `rerank` seam if hit@3 ever matters more.
 
-- **Phase 2 Q8 — grounded, cited generation (DONE, lands in this commit).**
+- **Phase 2 Q8 — grounded, cited generation (DONE, committed `cd258f5`).**
   `app/generate/generate.py`: `generate(query, chunks) → GeneratedAnswer` — the final read-path
   stage, turning ranked `ScoredChunk`s into an answer drawn **only from context**. Three grounding
   levers: a **system instruction** (answer only from context / say "I don't know" / cite chunk ids),
@@ -66,16 +66,60 @@ Scope for Phase 2 = a working `POST /ask`; LangGraph, Guardrails, and streaming 
   is NOT a hallucination count. `is_refusal` and its immutable test are left exactly as a coarse
   explicit-refusal tripwire; robust fabricated-vs-grounded judgment is Q9's LLM-as-judge job. (See
   the `eval-metrics-honest-labeling` memory.)
-- Offline test suite: **94 pass + 4 deselected (live)**, 0 skip; ruff + black clean on `app/`.
+- **Phase 2 Q9 — RAGAS answer-eval, the LLM-as-judge (DONE, committed `a1228f6`).**
+  `ragas==0.4.3`, judge `gemini-3.1-flash-lite`, built as **two separate commands** because the free
+  tier is 15 RPM / **500 generation requests per day** — a run must never be wasted:
+  **phase A** (`eval/produce.py`) runs the real `retrieve()`+`generate()` once and caches each answer
+  **with the exact contexts it saw** → `eval/results/answers-<stamp>.jsonl` (the judge's input *and*
+  the audit trail); **phase B** (`eval/ragas_eval.py`) judges that file, so re-scoring costs nothing
+  in generation. `eval/throttle.py` = a pure `AsyncRateLimiter` (**sliding window** — matches the
+  literal "15 per minute" quota; injectable clock/sleep so its spec runs offline), plus a pre-flight
+  `estimate_requests` guard that aborts **before** spending. Three metrics, one per edge of the RAG
+  triad: **faithfulness** (contexts↔answer → generation), **answer relevancy** (question↔answer →
+  prompt), **context recall** (→ retrieval; needs the reference). **Context precision deliberately
+  excluded** — an LLM's guess at the ranking property Q4 already measures with human-approved
+  chunk-ids, at ~25% of the budget. **Traps get faithfulness only**: answer relevancy multiplies by
+  `int(not all_noncommittal)`, so a *correct* refusal scores exactly 0. Teaching note
+  `docs/learning/Q9-ragas.md`.
+- **Generation baseline — RAGAS, rerank ON, strictness 3** (500 requests, **zero metric failures**;
+  `eval/results/ragas-20260721T131433_136492Z.json` over `answers-20260721T123921_657092Z.jsonl`):
+
+  > **golden (48): faithfulness 0.971 · answer relevancy 0.930 · context recall 0.958**
+  > **trap (10): faithfulness 0.597**
+  >
+  > **Both headline numbers mislead, in opposite directions** — every sub-1.0 row was hand-checked.
+  > The 2 zero-recall rows have **correct answers AND correct retrieval**: the judge is right that a
+  > headerless table chunk (a bare numeric grid) never names its company, so this is **chunk context
+  > loss**, not a retrieval failure — direct evidence for the deferred **M-enrich** stage. And trap
+  > 0.597 is **not a 40% hallucination rate**: all 10 trap answers were correct, **zero fabrications**.
+  > Faithfulness scores answer *shape* — a bare "I don't know." earns **0.0** for having no claims to
+  > support; refusal + grounded explanation 0.5–0.8; grounded negation 1.0. Notably **T5 and T8, the
+  > two the Q8 keyword metric wrongly *failed*, both score 1.0 here** — complementary blind spots, so
+  > `eval/refusal.py` stays *beside* the judge rather than being replaced by it.
+  >
+  > **As a regression ruler:** golden faithfulness and recall sit near ceiling (3/48 and 2/48 below
+  > 1.0) → they'll only catch large regressions; **answer relevancy (0.930) is the sensitive one**.
+  > Scores are **self-graded** (judge == generator model → biased upward) and non-deterministic even
+  > at temperature 0: over N=48 a delta under **~0.05** is noise, not signal.
+
+- Offline test suite: **132 pass + 5 deselected (live)**, 0 skip; ruff clean, black clean on `app/`.
 
 ## Immediate next step
 
-**Q9 — full RAGAS answer-eval (faithfulness / answer relevance / context precision·recall).** The
-robust, semantic verdict that Q8's keyword refusal check deliberately punts on: an **LLM-as-judge**
-that can separate a correct grounded negation from a fabrication (the exact gap the trap run
-exposed). Adds reference/ground-truth answers to the golden set and scores the real
-`retrieve → generate` path over the 48 answerable Q. Ship test-first + `docs/learning/Q9-*.md`.
-Full breakdown: Q9 in `docs/PHASE2-PLAN.md`. (Q10 = `POST /ask` + per-query log closes Phase 2.)
+**Q10 — `POST /ask` (request-shaped) + the per-query structured log.** Closes Phase 2: wire the
+finished read path (`retrieve` → rerank → `generate`) behind an HTTP endpoint, and log every query
+per the CLAUDE.md contract — user message, retrieved chunk ids, reranked order, final context, the
+answer, token/cost usage. Unlike ingestion this one **is** request-shaped (answer in the response,
+not 202-and-poll). Ship test-first + `docs/learning/Q10-*.md`. Full breakdown in
+`docs/PHASE2-PLAN.md`.
+
+**Two architect decisions parked from Q9** (neither blocks Q10):
+1. **Trap faithfulness.** Fixing the 0.597 artifact means either a refusal-specific metric or
+   requiring the prompt to *always* explain its refusals. The latter is a **generator prompt
+   change** — your call, deliberately not slipped in under an eval task (eval measures; it does
+   not fix).
+2. **`tests/test_parse.py`'s two commented-out assertions** (`# assert "Falcon-9X" in full_text`,
+   2026-07-06) — a silently weakened *immutable* test. Restoring them is a spec decision.
 
 ## Open blockers / cautions
 
@@ -87,9 +131,13 @@ Full breakdown: Q9 in `docs/PHASE2-PLAN.md`. (Q10 = `POST /ask` + per-query log 
   fence logic is covered by `test_worker.py`, so this is an optional live-confidence check
   (shorten `ingest_stuck_after_seconds`, leave a stale `processing` row, watch Beat requeue +
   `attempt` bump).
+- **⚠ Dependency ceiling: `langchain-community<0.4` is load-bearing.** `ragas==0.4.3` imports a
+  module langchain-community 0.4.x **deleted** — without the pin, `import ragas` fails outright and
+  every Q9 test collapses at collection. Don't "helpfully" unpin it during a dependency refresh.
 - **Lint debt (optional cleanup):** `tests/test_parse.py` isn't `black`-clean (two commented-out
   lines). It's an **immutable** test file — left untouched on purpose; worth a separate
-  formatting-only commit if ever.
+  formatting-only commit if ever. Those two commented-out assertions are also a **silently weakened
+  spec** — see the parked decision above.
 - **Credentials:** a PAT was once exposed in chat — **revoke it**; use `gh auth login` or SSH.
 
 ## How to run & test (fresh session assumes nothing is running)
@@ -121,6 +169,20 @@ Full breakdown: Q9 in `docs/PHASE2-PLAN.md`. (Q10 = `POST /ask` + per-query log 
   `explicit_refusal_rate` **lower bound** (keyword-based); eyeball the `non_refusals` review queue
   for any actually-fabricated answer. Regenerate the trap set (if `golden_questions.md` changes)
   with `python -m eval.build_traps`.
+- **RAGAS answer-eval (Q9, live — two phases, budget-bound).** Needs Postgres + `GEMINI_API_KEY`.
+  **Phase A** (58 generation calls + embeds) caches the answers; **phase B** (~500 judge requests,
+  ~34 min at 15 RPM) scores them:
+  ```powershell
+  $env:RERANK_ENABLED="true"    # baseline was recorded rerank-ON; match it or the numbers don't compare
+  backend\.venv\Scripts\python.exe -m eval.produce --out eval/results/
+  backend\.venv\Scripts\python.exe -m eval.ragas_eval `
+      --answers eval/results/answers-<stamp>.jsonl --strictness 3 --max-requests 520
+  ```
+  **Phase B alone is ~500 of the 500/day generation quota** — one full run per day, so smoke the
+  wiring with `--limit 3` first. `--max-requests` **must** be raised past the 450 default at
+  strictness 3 or the pre-flight guard aborts. Re-scoring an existing answers file is free of
+  generation cost — never re-run phase A just to re-judge. Embedding has its **own separate**
+  1000/day quota, so it isn't the binding constraint.
 - **Inspect the dev DB:** `docker exec -it prodrag-postgres psql -U prodrag -d prodrag`, or VS Code
   SQLTools; ready queries in `infra/db/explore.sql`.
 - **Curl on Windows:** use `curl.exe`, not bare `curl` (aliased to `Invoke-WebRequest`).
