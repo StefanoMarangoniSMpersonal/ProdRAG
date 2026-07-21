@@ -47,6 +47,9 @@ SDK surface (google-genai, same client + key as embedding — no new dependency)
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from time import perf_counter
+
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -86,6 +89,63 @@ class GeneratedAnswer(BaseModel):
     )
 
 
+@dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """What one generation call cost, in tokens (Q10).
+
+    Tokens, not dollars: prices change independently of the code and per model, so a
+    stored dollar figure would rot. Cost is derived at reporting time from these counts
+    plus the model id. Every field is optional because the SDK may not report usage.
+    """
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationResult:
+    """The generation stage's full output: the answer, plus what it cost and took (Q10).
+
+    FLAT on purpose — `.answer` (str) and `.citations` (list[int]) reproduce exactly the
+    attribute surface `GeneratedAnswer` exposes, so every caller written against the Q8
+    return type keeps working unchanged. The additions ride alongside:
+
+    `usage` — the token counts the CLAUDE.md per-query log contract asks for. They
+    can't live on `GeneratedAnswer`: that model IS the `response_schema` handed to
+    Gemini, so a field added there becomes a field the MODEL fills in (it would invent
+    its own token counts). Usage is knowledge about the call, not part of the answer,
+    so it belongs on the wrapper the SDK never sees. `None` when no call was made (the
+    empty-context refusal) or the response reported none — never a fabricated 0.
+
+    `timings_ms` — the same eval-substrate rule retrieval follows: nothing runs
+    silently.
+    """
+
+    answer: str
+    citations: list[int]
+    usage: TokenUsage | None = None
+    timings_ms: dict[str, float] = field(default_factory=dict)
+
+
+def _read_usage(response: object) -> TokenUsage | None:
+    """Extract token counts from a generation response, tolerantly.
+
+    `usage_metadata` is read with `getattr` rather than attribute access because not
+    every response shape carries it. A missing count degrades to `None` ("unknown"), not
+    to 0 — a zero would silently under-report spend, and an AttributeError would throw
+    away a perfectly good answer over a bookkeeping detail.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return None
+    return TokenUsage(
+        prompt_tokens=getattr(usage, "prompt_token_count", None),
+        completion_tokens=getattr(usage, "candidates_token_count", None),
+        total_tokens=getattr(usage, "total_token_count", None),
+    )
+
+
 def _build_prompt(query: str, chunks: list[ScoredChunk]) -> str:
     """Render the user turn: the labeled context passages followed by the question.
 
@@ -99,19 +159,22 @@ def _build_prompt(query: str, chunks: list[ScoredChunk]) -> str:
     return f"Context:\n{passages}\n\nQuestion: {query}"
 
 
-async def generate(query: str, chunks: list[ScoredChunk]) -> GeneratedAnswer:
-    """Answer `query` grounded in `chunks`; return the answer plus the cited chunk ids.
+async def generate(query: str, chunks: list[ScoredChunk]) -> GenerationResult:
+    """Answer `query` from `chunks`; return the answer, its citations and its cost.
 
     The answer is constrained to the provided context by the system instruction,
     temperature 0, and a JSON schema (see module docstring). When `chunks` is empty
     there is nothing to ground on, so we refuse locally — returning an "I don't know"
     with no citations — rather than spend a billable call that could only hallucinate
-    (mirrors embed's empty-input short-circuit).
+    (mirrors embed's empty-input short-circuit); that path reports no usage, because no
+    call was made.
     """
+    started = perf_counter()
     if not chunks:
-        return GeneratedAnswer(
+        return GenerationResult(
             answer="I don't know — no relevant context was retrieved.",
             citations=[],
+            timings_ms={"generate_ms": round((perf_counter() - started) * 1000, 1)},
         )
 
     # Lazy import (see module docstring): only a real generation pays to load the SDK.
@@ -134,5 +197,12 @@ async def generate(query: str, chunks: list[ScoredChunk]) -> GeneratedAnswer:
         ),
     )
 
-    # `.text` is the JSON string (application/json); validate it into the model.
-    return GeneratedAnswer.model_validate_json(response.text)
+    # `.text` is the JSON string (application/json); validate it into the model, then
+    # flatten it onto the result wrapper alongside the call's cost and wall time.
+    parsed = GeneratedAnswer.model_validate_json(response.text)
+    return GenerationResult(
+        answer=parsed.answer,
+        citations=parsed.citations,
+        usage=_read_usage(response),
+        timings_ms={"generate_ms": round((perf_counter() - started) * 1000, 1)},
+    )

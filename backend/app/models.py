@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models mirroring infra/db/migrations/002_schema.sql.
+"""SQLAlchemy ORM models mirroring infra/db/migrations/002_schema.sql (+ 003, 004).
 
 Option A (see plan / CLAUDE.md): the SQL migration is the source of truth for the
 schema; these models give the app *typed* access for the ingestion write path (M5)
@@ -22,7 +22,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Fixed dev-user id used until Supabase Auth lands. Because owner_id already exists
@@ -121,3 +121,42 @@ class Chunk(Base):
             "document_id", "ordinal", name="chunks_document_id_ordinal_key"
         ),
     )
+
+
+class QueryLog(Base):
+    """One answered query, recorded (Q10) — mirrors 004_query_logs.sql.
+
+    The durable half of the CLAUDE.md logging contract ("log every RAG query... this log
+    is the raw material for evaluation"); `/ask` also emits a structured stdout line for
+    live tailing. Deliberately NOT related to `Document`/`Chunk` by a foreign key: chunk
+    ids are stored as plain arrays so a deleted document can never cascade away the
+    history of what was answered (an audit record must outlive its subject).
+    """
+
+    __tablename__ = "query_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, default=DEV_OWNER_ID
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    # Ordered chunk-id lists — rank order IS the data, so arrays (not JSONB, not a set).
+    citations: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), nullable=False, default=list
+    )
+    retrieved_chunk_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), nullable=False, default=list
+    )
+    final_chunk_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), nullable=False, default=list
+    )
+    context_chars: Mapped[int | None] = mapped_column(Integer)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    generation_model: Mapped[str | None] = mapped_column(Text)
+    timings_ms: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -9,9 +9,10 @@ rationale, and gotchas live in the code, `docs/PROGRESS.md` (layer % tracker),
 
 ## Current goal
 
-**Phase 2 — retrieval pipeline.** Build the query path end to end:
-embed query → hybrid (semantic + lexical) → RRF fusion → cross-encoder rerank → generate.
-Scope for Phase 2 = a working `POST /ask`; LangGraph, Guardrails, and streaming are Phase 2.5.
+**Phase 2 — retrieval pipeline: COMPLETE (Q1–Q10).** The query path runs end to end and is
+reachable over HTTP: `POST /ask` → embed query → hybrid (semantic + lexical) → RRF fusion →
+cross-encoder rerank → grounded cited generation → per-query log. LangGraph, Guardrails,
+streaming, the chat UI and the Redis semantic cache are **Phase 2.5** — next goal is yours to pick.
 
 ## What's done
 
@@ -102,18 +103,45 @@ Scope for Phase 2 = a working `POST /ask`; LangGraph, Guardrails, and streaming 
   > Scores are **self-graded** (judge == generator model → biased upward) and non-deterministic even
   > at temperature 0: over N=48 a delta under **~0.05** is noise, not signal.
 
-- Offline test suite: **132 pass + 5 deselected (live)**, 0 skip; ruff clean, black clean on `app/`.
+- **Phase 2 Q10 — `POST /ask` + the per-query log (DONE, uncommitted).** `app/api/ask.py`
+  (mounted in `main.py`): `POST /ask {"query": ...}` → `retrieve` → `generate` → **200 with the
+  answer inline** — request-shaped, the deliberate contrast with job-shaped ingestion; a blank
+  question is rejected 400 before any spend. Response carries `{query_id, answer, citations,
+  retrieved_chunk_ids, reranked_chunk_ids, timings_ms}`. Three supporting changes:
+  - **`query_logs` table** (`infra/db/migrations/004_query_logs.sql` + `QueryLog` model) — the
+    durable half of the CLAUDE.md logging contract; the other half is a structured
+    `logger.info("ask.query …")` line. Stores chunk **ids** + `context_chars` (not the context
+    text — it's joinable back to `chunks`; trade-off recorded in the migration) and **tokens, not
+    dollars** (prices rot; cost is derived). The row write is **best-effort** — an audit failure
+    must never turn a paid-for answer into a 500.
+  - **`generate()` now returns `GenerationResult`** (flat: `.answer`, `.citations`, plus `usage`
+    and `timings_ms`). Usage could NOT go on `GeneratedAnswer` — that model *is* the
+    `response_schema` handed to Gemini, so a `usage` field would be a field the **model** fills
+    in. Flat surface ⇒ both eval callers and every other immutable assert stayed green; **one
+    architect-authorized revision** (`test_generate.py`'s `isinstance`), reasoning written into
+    the test.
+  - **`RetrievalResult.candidate_chunk_ids`** — the pre-rerank fused-pool order, so the log and
+    the response can show BOTH rankings (reporting the final list twice would have hidden the
+    retrieve-wide → rerank-narrow funnel).
+  - **A real bug the tests could not catch:** the `ask.query` line never appeared in the running
+    server — uvicorn configures only `uvicorn.*` loggers, so `app.*` fell back to the WARNING-level
+    lastResort handler and every `logger.info` was dropped (caplog hid this in tests). Fixed with
+    `logging.basicConfig(level=INFO, force=True)` in `app/main.py`.
+  - Note `docs/learning/Q10-ask-endpoint.md`. **Live-verified** with `RERANK_ENABLED=true`: 3 real
+    queries (one a correct refusal — "the text names a *president*, not a chancellor"), blank query
+    → 400, log lines emitted, `query_logs` rows carrying both rankings + real token counts.
+    Cold start is 24.8 s (first request loads the cross-encoder), warm ~2.3 s.
+- Offline test suite: **144 pass + 5 deselected (live)**, 0 skip; ruff clean, black clean on `app/`.
 
 ## Immediate next step
 
-**Q10 — `POST /ask` (request-shaped) + the per-query structured log.** Closes Phase 2: wire the
-finished read path (`retrieve` → rerank → `generate`) behind an HTTP endpoint, and log every query
-per the CLAUDE.md contract — user message, retrieved chunk ids, reranked order, final context, the
-answer, token/cost usage. Unlike ingestion this one **is** request-shaped (answer in the response,
-not 202-and-poll). Ship test-first + `docs/learning/Q10-*.md`. Full breakdown in
-`docs/PHASE2-PLAN.md`.
+**Phase 2 is closed — pick the Phase 2.5 goal.** The parked candidates, in the order they'd pay
+off: SSE streaming on `/ask` (biggest perceived-latency win, transport-only change) · the chat +
+upload frontend (nothing user-facing exists yet) · LangGraph orchestration of the read path ·
+Guardrails I/O validation · Redis semantic cache · query rewrite/HyDE. Also worth a cheap
+follow-up: a startup warm-up call so the first real query doesn't pay the 24.8 s model load.
 
-**Two architect decisions parked from Q9** (neither blocks Q10):
+**Two architect decisions parked from Q9** (neither blocked Q10):
 1. **Trap faithfulness.** Fixing the 0.597 artifact means either a refusal-specific metric or
    requiring the prompt to *always* explain its refusals. The latter is a **generator prompt
    change** — your call, deliberately not slipped in under an eval task (eval measures; it does
@@ -150,6 +178,16 @@ not 202-and-poll). Ship test-first + `docs/learning/Q10-*.md`. Full breakdown in
 (separate process — embedded `-B` is broken on Windows), frontend (:3000). Verify:
 `curl.exe http://localhost:8000/health/db`.
 
+- **Ask a question (Q10, live):** with the stack up (rerank is OFF unless you set
+  `RERANK_ENABLED=true` before starting the API) —
+  ```powershell
+  curl.exe -X POST http://localhost:8000/ask -H "Content-Type: application/json" `
+      -d '{\"query\":\"What is the NovaBridge API rate limit?\"}'
+  ```
+  The API window prints an `ask.query {...}` line per request; the same record is in
+  `query_logs` (`SELECT query, total_tokens, final_chunk_ids FROM query_logs ORDER BY created_at DESC;`).
+  New migrations are applied by `infra/db/migrations/apply-migrations.ps1` — run it **without**
+  `2>&1`, or psql's harmless `NOTICE` lines become terminating PowerShell errors.
 - **Tests:** run from repo root via the project venv explicitly —
   `backend\.venv\Scripts\python.exe -m pytest`. A **SKIP exits 0 → treat skips as a false green.**
   Docker daemon must be up (testcontainers ERROR, never SKIP, if down). Two PDF `hi_res` tests

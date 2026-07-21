@@ -126,7 +126,9 @@ async def session_factory(
     try:
         yield factory
     finally:
-        # CASCADE + both tables so a committed run leaves nothing for the next test.
+        # CASCADE + every committed-to table so a run leaves nothing for the next test.
+        # query_logs (004) joined the list at Q10: /ask commits an audit row, and it has
+        # no FK to documents, so a CASCADE from the other two would never reach it.
         async with engine.begin() as conn:
-            await conn.execute(text("TRUNCATE chunks, documents CASCADE"))
+            await conn.execute(text("TRUNCATE chunks, documents, query_logs CASCADE"))
         await engine.dispose()

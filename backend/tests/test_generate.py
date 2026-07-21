@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.generate import generate as gen_mod
-from app.generate.generate import GeneratedAnswer, generate
+from app.generate.generate import GeneratedAnswer, GenerationResult, generate
 from app.models import Chunk
 from app.retrieve.types import ScoredChunk
 
@@ -134,11 +134,19 @@ async def test_generate_passes_model_temperature_and_structured_output(
 
 
 async def test_generate_parses_json_into_model(fake_client: _FakeClient) -> None:
-    # The canned JSON must come back as a typed GeneratedAnswer with int citations — the
+    # The canned JSON must come back as a typed result with int citations — the
     # structured-output contract the /ask endpoint (Q10) and refusal eval depend on.
     result = await generate("q", [_scored(34, "ctx"), _scored(37, "ctx")])
 
-    assert isinstance(result, GeneratedAnswer)
+    # ARCHITECT-AUTHORIZED SPEC REVISION (2026-07-21, Q10). Only this line and its twin
+    # below changed; every other assert in this file is the original Q8 spec.
+    # WHY: Q10's per-query log must record token usage (CLAUDE.md logging contract), and
+    # usage cannot be a field on GeneratedAnswer — that model IS the `response_schema`
+    # handed to Gemini, so a `usage` field there would be a field the MODEL fills in.
+    # So generate() now returns a GenerationResult wrapper carrying usage + timings. The
+    # wrapper is FLAT (.answer/.citations), which is why every other assert here — and
+    # both eval call sites — needed no change at all: only the type name moved.
+    assert isinstance(result, GenerationResult)
     assert result.answer == "The CEO is Marta Silveira."
     assert result.citations == [34, 37]
     assert all(isinstance(c, int) for c in result.citations)
@@ -151,7 +159,8 @@ async def test_generate_empty_chunks_refuses_without_calling(
     # than spend a (billable) call that can only hallucinate — mirrors embed's guard.
     result = await generate("q", [])
 
-    assert isinstance(result, GeneratedAnswer)
+    # The authorized revision's twin — see the reasoning above.
+    assert isinstance(result, GenerationResult)
     assert result.citations == []
     assert "don't know" in result.answer.lower()
     assert fake_client.aio.models.calls == []

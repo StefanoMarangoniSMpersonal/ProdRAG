@@ -46,6 +46,12 @@ class RetrievalResult:
     here beside `ScoredChunk` — the shared result-vocabulary module — so there is one
     canonical definition and no import cycle, the same reasoning `ScoredChunk` records.
 
+    `candidate_chunk_ids` is the ranking BEFORE the cross-encoder reordered it — the
+    fused candidate pool's chunk ids, best-first (Q10). Without it the pre-rerank order
+    would be destroyed by rerank, and the per-query log could only ever report the final
+    list twice, hiding the retrieve-wide -> rerank-narrow funnel it exists to expose.
+    With rerank off the pool IS the result, so it simply matches `chunks`' ids.
+
     `chunks` is the ranked result (best first). `timings_ms` maps each stage name
     (`embed_ms`, `search_ms`, `total_ms`; more as lexical/rerank land) to its wall-clock
     milliseconds — retrieval must never run silently (the "eval is a substrate" rule,
@@ -56,3 +62,4 @@ class RetrievalResult:
     query: str
     chunks: list[ScoredChunk]
     timings_ms: dict[str, float] = field(default_factory=dict)
+    candidate_chunk_ids: list[int] = field(default_factory=list)

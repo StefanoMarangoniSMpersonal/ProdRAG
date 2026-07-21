@@ -167,4 +167,12 @@ async def retrieve(
         chunks = fused_pool[:k]
 
     timings["total_ms"] = _ms(started)
-    return RetrievalResult(query=query, chunks=chunks, timings_ms=timings)
+    return RetrievalResult(
+        query=query,
+        chunks=chunks,
+        timings_ms=timings,
+        # The fused pool's order, captured BEFORE rerank could overwrite it: the
+        # per-query log (Q10) records both "what retrieval found" and "what the
+        # reranker promoted", and only this snapshot preserves the former.
+        candidate_chunk_ids=[sc.chunk.id for sc in fused_pool],
+    )

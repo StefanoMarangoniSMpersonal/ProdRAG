@@ -246,8 +246,17 @@ corpus docs, then re-run `build_golden.py`. Keep the golden Q&A un-ingested. Rat
   **Two architect-authorized spec revisions** (batch fan-out; relevancy cost model), both recorded
   with their rationale in the tests.
 
-### Q10 — Query API endpoint (`POST /ask`) + per-query logging
-- **Code:** `app/api/ask.py` — `POST /ask` runs `retrieve → rerank → generate`, returns
+### Q10 — Query API endpoint (`POST /ask`) + per-query logging ✅ DONE (2026-07-21)
+- **Delivered:** `app/api/ask.py` (mounted in `main.py`), migration `004_query_logs.sql` +
+  `QueryLog` model, `GenerationResult` (answer + citations + **token usage** + timings) replacing
+  `generate()`'s bare `GeneratedAnswer` return, and `RetrievalResult.candidate_chunk_ids` (the
+  pre-rerank pool order, so both rankings can be reported). Log goes to **two sinks** (architect
+  decision): a structured `logger.info` line AND a durable `query_logs` row; the row write is
+  best-effort so an audit failure never costs the user an answer. Tokens stored, not dollars.
+  1 architect-authorized spec revision (`test_generate.py`'s `isinstance`). Tests: `test_ask.py` (6),
+  `test_generate_usage.py` (4), `test_retrieve_candidates.py` (2) → suite **144+5**, 0-skip. Note
+  `docs/learning/Q10-ask-endpoint.md`. Live-verified end to end (3 real queries, rerank ON).
+- **Original spec:** `POST /ask` runs `retrieve → rerank → generate`, returns
   `{answer, citations, retrieved_chunk_ids, reranked_chunk_ids}`. **Request-shaped** (synchronous),
   the deliberate contrast with job-shaped ingestion. Emit the locked **per-query structured log**
   (user message, retrieved IDs, reranked order, final context, answer, token/cost) — the eval

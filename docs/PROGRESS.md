@@ -5,8 +5,29 @@
 > Companion to `docs/CHANGELOG.md` (append-only history), `docs/HANDOFF.md` (session
 > state), and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-21 — **Phase 2 retrieval: Q1–Q9 COMPLETE; the LLM-as-judge answer baseline is
-> recorded.** Q9 added the RAGAS harness (`ragas==0.4.3`) as **two separate commands** so a run is never
+> _Last updated: 2026-07-21 (later session) — **PHASE 2 IS COMPLETE (Q1–Q10).** Q10 put the finished read
+> path behind HTTP: `POST /ask` (`app/api/ask.py`, mounted in `main.py`) runs retrieve → generate and
+> returns the answer **inline** — request-shaped, the deliberate contrast with job-shaped ingestion's
+> 202-and-poll; a blank question is rejected 400 before any spend. Every query now leaves a record in
+> **two sinks** (architect decision): a structured `ask.query` log line for the live tail, and a durable
+> `query_logs` row (migration `004`) for the SQL questions a log stream can't answer. The row stores chunk
+> **ids** + `context_chars` rather than the context text (joinable back to `chunks`; trade-off recorded in
+> the migration) and **tokens, not dollars** (prices rot — cost is derived). The write is **best-effort**:
+> an audit failure must never turn a paid-for answer into a 500. Two supporting reshapes: `generate()` now
+> returns a flat **`GenerationResult`** (`.answer`/`.citations` + `usage` + timings) — usage could not go on
+> `GeneratedAnswer` because that model *is* the `response_schema` handed to Gemini, so the field would be one
+> the **model** fills in; and **`RetrievalResult.candidate_chunk_ids`** preserves the pre-rerank pool so both
+> rankings are reportable (reporting the final list twice would hide the retrieve-wide → rerank-narrow
+> funnel). **One architect-authorized spec revision** (`test_generate.py`'s `isinstance`), reasoning written
+> into the test. **A bug only the real server could reveal:** the log line never printed — uvicorn configures
+> only `uvicorn.*` loggers, so `app.*` fell back to the WARNING-level lastResort handler and every
+> `logger.info` was dropped (caplog masked it in tests); fixed with `logging.basicConfig(force=True)` in
+> `main.py`. Offline suite **144 pass + 5 deselected, 0 skip**; live-verified with `RERANK_ENABLED=true`
+> (3 real queries incl. a correct refusal; cold start 24.8 s = cross-encoder load, warm ~2.3 s). Note
+> `docs/learning/Q10-ask-endpoint.md`. **Next = Phase 2.5** (streaming · chat UI · LangGraph · Guardrails ·
+> semantic cache), the architect's pick._
+>
+> _Previously: **Q9 COMPLETE; the LLM-as-judge answer baseline is recorded.** Q9 added the RAGAS harness (`ragas==0.4.3`) as **two separate commands** so a run is never
 > wasted against the free-tier quota: phase A (`eval/produce.py`) runs the real `retrieve()`+`generate()`
 > once and caches every answer *with the exact contexts it saw* to `eval/results/answers-<stamp>.jsonl`;
 > phase B (`eval/ragas_eval.py`) judges that file, so re-scoring never re-pays for generation. A sliding-
@@ -47,17 +68,20 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | # | Layer | Owns | Code-only | **Code + design** |
 |---|-------|------|-----------|-------------------|
 | 1 | Presentation (Frontend) | Next.js chat/upload UI, streaming, auth session | ~5% | **~10%** |
-| 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~30% | **~40%** |
+| 2 | API (FastAPI) | upload/ask/list/stream endpoints; 202-and-poll upload contract | ~45% | **~55%** |
 | 3 | Async / task queue | Celery workers + Redis broker/cache | ~70% | **~80%** |
 | 4 | Ingestion pipeline | parse → chunk → embed → write, orchestrated | ~95% | **~98%** |
-| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~62% | **~68%** |
-| 6 | Data & storage | Postgres+pgvector, schema, blob store | ~65% | **~76%** |
+| 5 | Query / retrieval pipeline | embed → hybrid search → RRF → rerank → generate → guard | ~72% | **~78%** |
+| 6 | Data & storage | Postgres+pgvector, schema, blob store | ~70% | **~79%** |
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~30% | **~44%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
-| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~32% | **~44%** |
+| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~40% | **~52%** |
 
-**Weighted overall: ~37–39% (code-only) · ~52–53% (code + design).**
+**Weighted overall: ~42–44% (code-only) · ~56–58% (code + design).**
+_(Q10 moved four layers: API gained its second endpoint, the query pipeline is complete end to end,
+data gained `query_logs`, and observability gained real structured logging — the app's `logger.info`
+records were being silently dropped before this milestone.)_
 
 ## Notes per layer (why the score, what's next)
 
@@ -89,7 +113,7 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    only unit-tested, no result introspection/Flower, and the worker still uses a direct DB connection
    (Supavisor pooled-worker URL is the documented later swap).
 4. **Ingestion** — the critical path. Milestone detail below.
-5. **Query pipeline** — **Phase 2 in progress (Q1–Q6 COMPLETE; hybrid baseline recorded).** Q1 landed the
+5. **Query pipeline** — **Phase 2 COMPLETE (Q1–Q10); every baseline recorded.** Q1 landed the
    *storage substrate* (HNSW + `tsv`, see Layer 6); Q2 was the first query CODE (`search_semantic`, naive
    cosine vector search over a query *vector*); **Q3 is the first end-to-end read** —
    `app/retrieve/retrieve.py` `retrieve(query: str) → RetrievalResult` turns a query *string* into
@@ -122,7 +146,10 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    arrives as a bare numeric grid with no company name, so the generator answers correctly only by inferring
    attribution from neighbouring chunks — an inference the context doesn't strictly license, and a confident-
    swap risk when two similar tables share the window). That is the case *for* the deferred M-enrich stage.
-   **Next = Q10 (`POST /ask` + per-query structured log).**
+   **Q10 closed Phase 2**: the pipeline is reachable at `POST /ask` (request-shaped) and every query is
+   logged to stdout *and* `query_logs`, with both the pre-rerank and post-rerank rankings preserved.
+   Remaining gap to 100%: the input/output guard (Guardrails), LangGraph orchestration, streaming, and
+   query rewrite/HyDE — all Phase 2.5. **Next = Phase 2.5, scope to be picked by the architect.**
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -171,8 +198,13 @@ The gap between the two numbers *is the story*: design risk is bought down befor
     wrongly *failed*, both score **1.0** here — complementary blind spots, which is why `eval/refusal.py`
     stays *beside* the judge rather than being replaced by it. **As a regression ruler:** golden faithfulness
     and recall sit near ceiling (3/48 and 2/48 below 1.0) and will only catch large regressions; **answer
-    relevancy is the sensitive one**. Still missing: tracing (LangSmith/Sentry) and the per-query query log
-    (Q10). Logging contract + "eval as substrate" strategy predate this.
+    relevancy is the sensitive one**. **Q10 delivered the per-query log** — a structured `ask.query` stdout
+    line *and* a durable `query_logs` row per request (query, answer, citations, both rankings,
+    `context_chars`, token counts, per-stage `timings_ms`), which is the CLAUDE.md logging contract
+    discharged and the first eval substrate produced by *real* traffic rather than a golden file. It also
+    fixed the reason nothing was visible before: `app.*` loggers were unconfigured under uvicorn, so every
+    `logger.info` in the app — ingestion included — was silently dropped. Still missing: tracing
+    (LangSmith/Sentry) and per-query cost/latency dashboards. The "eval as substrate" strategy predates this.
 
 ## Ingestion milestones (Layer 4 detail)
 
@@ -207,7 +239,7 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 | Q7 | Cross-encoder rerank — retrieve-wide → rerank to top-k; **provider decision (ADR)** | ✅ complete & verified, committed `a67a4a4` — `app/retrieve/rerank.py`: **local** `cross-encoder/ms-marco-MiniLM-L-6-v2` via the already-installed `transformers` (**zero new deps**; ~90 MB model, lazy `@lru_cache` load, `asyncio.to_thread` off the loop, `_get_reranker` seam). `retrieve()` rewired with a **gated** pool-widen → rerank → truncate branch (`rerank_enabled` default OFF → byte-identical to Q6; `retrieval_candidate_k=50` pool; score becomes the reranker logit). `k` stays the FINAL size, so callers + the 4 immutable Q3 specs + 7 fuse specs unchanged. **ADR `docs/adr/0001-reranker-provider.md`** (rejected managed API / Gemini-as-reranker); note `docs/learning/Q7-rerank.md`. 6 tests (`test_rerank.py` 5 + `test_retrieve_rerank.py` 1); suite **81+3**, 0-skip. **Eval (rerank ON):** MRR 0.895→**0.927**, hit@1 0.812→**0.896**, hit@5 0.979→**1.000**, hit@3 0.979→0.938 (accepted 2-Q regression) — `eval/results/retrieval-20260718T192246_887014Z.json` |
 | Q8 | Generation — grounded, cited answer via a new Gemini generation client (ADR: model + citation granularity) | ✅ complete & verified (this commit) — `app/generate/generate.py`: `generate(query, chunks) → GeneratedAnswer` (Pydantic `answer: str` + `citations: list[int]`). Three grounding levers: **system instruction** (only-from-context / say "I don't know" / cite chunk ids), **temperature 0**, **structured JSON** (`response_mime_type="application/json"` + `response_schema=GeneratedAnswer`, same class as schema *and* parse target). **Chunk-level citations** (`chunk.id`; char-span deferred). Empty context → local refusal, **no billable call**. Model `gemini-3.1-flash-lite` (env `GENERATION_MODEL`, temp/max-tokens Settings). Embed + generation unified into shared `app/gemini_client.py` (one process-cached client; `embed.py` keeps `_get_client` alias → immutable embed tests untouched). **No new pip dep.** ADR `docs/adr/0002-generation.md`; note `docs/learning/Q8-generation.md`. **Refusal eval** — `eval/refusal.py` + `eval/build_traps.py` (→ `traps.jsonl`) over 10 traps; live run **0/10 hallucinations**, keyword metric relabelled `explicit_refusal_rate` **lower bound** + `non_refusals` review queue (architect: relabel now, judge in Q9); `eval/results/refusal-20260721T092240_787936Z.json`. Tests: `test_generate.py` (6, incl. 1 live), `test_refusal.py` (5), `test_refusal_report.py` (3); suite **94+4**, 0-skip |
 | Q9 | Full RAGAS answer-eval (faithfulness / relevance / context recall — **precision dropped**) | ✅ complete & verified (this commit) — `ragas==0.4.3`, judge `gemini-3.1-flash-lite`, **two-phase by design** (the free tier is 15 RPM / 500 generation requests per day, so a run must never be wasted): **phase A** `eval/produce.py` runs the real `retrieve()`+`generate()` once and caches `{id, question, reference, retrieved_chunk_ids, contexts, answer, citations}` to `answers-<stamp>.jsonl` — both the judge's input *and* the audit trail of what each score was computed against; **phase B** `eval/ragas_eval.py` judges that file, so re-scoring costs nothing in generation. `eval/throttle.py` = pure `AsyncRateLimiter` (sliding window — matches the literal "15 per minute" quota; injectable clock/sleep so its spec is offline), plus a pre-flight `estimate_requests` guard that aborts *before* spending. Three metrics, one per edge of the RAG triad — **faithfulness** (C↔a → generation), **answer relevancy** (q↔a → prompt), **context recall** (→ retrieval, needs the reference); **context precision deliberately excluded** (an LLM's guess at the ranking property Q4 already measures with human-approved chunk-ids, at ~25% of the budget). Traps get faithfulness **only** — answer relevancy multiplies by `int(not all_noncommittal)`, so a *correct* refusal scores exactly 0. Two bugs only a live run could catch: ragas' own `llm_factory` builds a **sync** client (replaced by an identical-signature `_llm_factory` with `use_async=True`), and `gemini-embedding-2` folds a `list[str]` into **one fused vector** (per-text fan-out in `ThrottledEmbeddings` — the same M4 trap, second sighting). Dependency **ceiling**: `langchain-community<0.4` (ragas 0.4.3 imports a module 0.4.x removed → `import ragas` fails outright). 4 modules + 6 test files; note `docs/learning/Q9-ragas.md`; suite **132+5**, 0-skip. **Baseline recorded 2026-07-21** (rerank ON, strictness 3, 500 requests, **zero metric failures**) — `eval/results/ragas-20260721T131433_136492Z.json`: golden(48) **faithfulness 0.971 · answer relevancy 0.930 · context recall 0.958**, trap(10) **faithfulness 0.597**. See Layer 10 for why both headline numbers mislead |
-| Q10 | Query API endpoint `POST /ask` (request-shaped) + per-query structured log | ⬜ |
+| Q10 | Query API endpoint `POST /ask` (request-shaped) + per-query structured log | ✅ complete & verified (this commit) — `app/api/ask.py` (mounted in `main.py`): `POST /ask {"query": …}` → `retrieve` → `generate` → **200 with the answer inline**, returning `{query_id, answer, citations, retrieved_chunk_ids, reranked_chunk_ids, timings_ms}`; a blank/whitespace question is **400 before any retrieval or billable call**. **Request-shaped on purpose** — the contrast with job-shaped ingestion is decided by duration (tens of seconds ⇒ 202-and-poll; ~1–3 s ⇒ answer inline), not fashion. **Per-query log to two sinks** (architect decision): a structured `logger.info("ask.query {…}")` line (the live tail) **and** a durable `query_logs` row (`infra/db/migrations/004_query_logs.sql` + `QueryLog` model) for the SQL questions a log stream can't answer. Row design: ordered `bigint[]` id lists (rank order *is* the data), chunk **ids** + `context_chars` instead of the context text (joinable back to `chunks`; deletion trade-off recorded in the migration), **tokens not dollars** (prices rot ⇒ cost is derived), `timings_ms` as JSONB because the stage set keeps changing. The write is **best-effort** (`try/except`) — an audit failure must never turn a paid-for answer into a 500. Two supporting reshapes: **`generate()` → `GenerationResult`** (flat `.answer`/`.citations` + `usage` + `timings_ms`; usage could NOT be a `GeneratedAnswer` field because that model *is* the `response_schema` handed to Gemini — the model would fill it in) and **`RetrievalResult.candidate_chunk_ids`** (the pre-rerank fused-pool order, so both rankings are reportable instead of the final list printed twice). **One architect-authorized spec revision** (`test_generate.py`'s `isinstance`), reasoning written into the test; the flat wrapper is what kept both eval callers and every other immutable assert green. **A bug only the real server could catch:** the log line never printed — uvicorn configures only `uvicorn.*` loggers, so `app.*` fell back to the WARNING-level lastResort handler and every `logger.info` was dropped (caplog masked it); fixed with `logging.basicConfig(level=INFO, force=True)` in `main.py`. Tests: `test_ask.py` (6), `test_generate_usage.py` (4), `test_retrieve_candidates.py` (2), all red-first; harness teardown now truncates `query_logs` (no FK ⇒ no CASCADE). Suite **144+5**, 0-skip. Note `docs/learning/Q10-ask-endpoint.md`. **Live-verified** (`RERANK_ENABLED=true`, dev corpus): 3 real queries incl. a correct refusal, 400 on blank, log lines emitted, rows carrying both rankings + real token counts; cold start 24.8 s (cross-encoder load), warm ~2.3 s |
 
 ## Open loose ends (inside "done" work)
 
@@ -252,7 +284,12 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   ceiling + `jsonref`, `pydantic-settings` 2.7.1→2.14.2), the `eval-run` skill's two-phase invocation, and the
   two baseline artifacts (`answers-20260721T123921_657092Z.jsonl` + `ragas-20260721T131433_136492Z.json` —
   the answers file is committed *deliberately*: without it a score can't be re-checked against the contexts
-  that produced it). **This session:** the Q9 live baseline + these `PROGRESS.md` refreshes.
+  that produced it). **Q10 (`POST /ask`) lands in a later commit** — `backend/app/api/ask.py`,
+  `infra/db/migrations/004_query_logs.sql` + the `QueryLog` model, `GenerationResult`/`TokenUsage` in
+  `app/generate/generate.py`, `RetrievalResult.candidate_chunk_ids`, the `main.py` router mount +
+  `logging.basicConfig`, three new test files (`test_ask.py`, `test_generate_usage.py`,
+  `test_retrieve_candidates.py`), the `conftest.py` truncate fix, the one authorized `test_generate.py`
+  revision, and `docs/learning/Q10-ask-endpoint.md`.
   (`.vscode/settings.json` — SQLTools connection + Pylance
   `python.analysis.extraPaths` for the `app.*`/`eval.*` import roots — is git-ignored.)
 
