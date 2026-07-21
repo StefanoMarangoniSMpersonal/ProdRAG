@@ -218,15 +218,33 @@ corpus docs, then re-run `build_golden.py`. Keep the golden Q&A un-ingested. Rat
   the only-from-context instruction, and citations parse into the Pydantic model. `@pytest.mark.live`
   test for real grounding (answers from context; says "I don't know" when context lacks the answer).
 
-### Q9 — Full RAGAS answer-eval  ← woven eval, late half
-- **Code:** extend `/eval` with **RAGAS** metrics — faithfulness, answer relevance, context
-  precision, context recall — over the golden set (add reference answers to `golden.jsonl`). Complete
-  `python -m eval.run`; finish the `eval-run` skill. New dep `ragas` (+ its Gemini judge wiring).
-- **Teaching note** (`Q9-ragas.md`): what each metric isolates and **which stage it blames**
-  (context recall→retrieval, context precision→rerank/fusion, faithfulness→generation grounding,
-  answer relevance→prompt); using it to A/B any earlier stage.
-- **Test (`test_eval_ragas.py`):** metric-wiring smoke with a mocked LLM judge so the harness runs
-  offline in CI; live RAGAS opt-in (`-m live`).
+### Q9 — Full RAGAS answer-eval  ← woven eval, late half ✅ DONE (2026-07-21)
+- **Code:** `eval/produce.py` (phase A: pipeline → cached answers JSONL), `eval/ragas_eval.py`
+  (phase B: judge + CLI), `eval/judge.py` (throttled Gemini judge), `eval/throttle.py` (sliding-window
+  limiter). Reference answers were already in `golden.jsonl` from Q4, so no golden-set work was needed.
+  `eval-run` skill updated for the two-phase invocation. New deps: `ragas==0.4.3`, `langchain-community<0.4`
+  (pin — 0.4.x removed a module ragas imports), `jsonref` (instructor's Gemini path needs it);
+  `pydantic-settings` 2.7.1 → 2.14.2.
+- **Decisions locked (2026-07-21):**
+  1. **Three metrics, not four** — faithfulness, answer relevancy, LLM context recall. **Context
+     precision deliberately dropped:** it is an LLM's guess at the ranking property MRR/hit@k already
+     measures with human labels, at ~25% of the call budget.
+  2. **Native Google provider, not the LangChain wrapper** — consumes the existing
+     `app/gemini_client.py` client, so no `langchain-google-genai` and no second httpx pool.
+  3. **Judge = the generation model** (`gemini-3.1-flash-lite`) → **self-graded**, biased upward;
+     labelled as such in every report rather than hidden.
+  4. **Traps get faithfulness only** — answer relevancy scores a correct refusal 0, so running it over
+     traps would punish the model for behaving correctly.
+  5. **Two-phase (produce → judge)** because the free tier is 15/min and 500/day generation: generation
+     is paid once and re-scored for free.
+- **Teaching note** (`Q9-ragas.md`): claim decomposition + NLI entailment vs Likert/BLEU; the RAG
+  triad and which stage each metric blames; the refusal-scores-0 trap; quota-shaped design; the two
+  live-only bugs (sync instructor client; `gemini-embedding-2` batch fusion — the same M4 trap).
+- **Tests:** `test_throttle.py` (5), `test_judge.py` (5), `test_produce.py` (8),
+  `test_produce_throttle.py` (2), `test_eval_ragas.py` (18) offline with fake metrics;
+  `test_ragas_live.py` opt-in `-m live` (grounded answer must outscore a fabricated one).
+  **Two architect-authorized spec revisions** (batch fan-out; relevancy cost model), both recorded
+  with their rationale in the tests.
 
 ### Q10 — Query API endpoint (`POST /ask`) + per-query logging
 - **Code:** `app/api/ask.py` — `POST /ask` runs `retrieve → rerank → generate`, returns
@@ -248,7 +266,8 @@ semantic cache · query rewrite / HyDE · frontend chat + upload UI.
 ## New dependencies (by milestone)
 - Q1–Q6, Q8, Q10: **none** (pgvector + `google-genai` already installed; generation reuses the SDK).
 - Q7: one reranker SDK **iff** a managed API is chosen (decided at Q7).
-- Q9: `ragas`.
+- Q9: `ragas==0.4.3` + `langchain-community<0.4` (ceiling: ragas imports a module 0.4.x removed)
+  + `jsonref` (instructor's Gemini path). Also bumped `pydantic-settings` to 2.14.2.
 
 ## Verification (how we prove each milestone works)
 - **Offline suite:** `backend\.venv\Scripts\python.exe -m pytest` from repo root — every milestone

@@ -5,25 +5,30 @@
 > Companion to `docs/CHANGELOG.md` (append-only history), `docs/HANDOFF.md` (session
 > state), and `CLAUDE.md` (the constitution).
 >
-> _Last updated: 2026-07-21 — **Phase 2 retrieval: Q1–Q8 COMPLETE; grounded, cited generation landed.**
-> Q8 added `app/generate/generate.py` — `generate(query, chunks) → GeneratedAnswer`, the final read-path
-> stage. Three grounding levers: a **system instruction** (answer only from context / say "I don't know" /
-> cite chunk ids), **temperature 0**, and **structured JSON output** (`response_schema=GeneratedAnswer`, a
-> Pydantic model reused as both schema and parse target); **chunk-level citations** (`list[int]` of
-> `chunk.id`); empty-context → local refusal with **no billable call**. Model `gemini-3.1-flash-lite`; the
-> embed + generation clients were unified into a shared `app/gemini_client.py` (one process-cached client,
-> honoring the worker one-loop httpx discipline) with `embed.py` importing it under its old `_get_client`
-> name so its immutable tests stayed green. **No new pip dep.** The 10-trap **refusal eval**
-> (`eval/refusal.py` + `eval/build_traps.py` → `traps.jsonl`) ran live: the model **hallucinated 0/10**, but
-> the keyword `is_refusal` metric scored 8/10 — a **correct grounded negation** carries no refusal phrase and
-> one real refusal was phrased off-list. **Architect decision (relabel now, judge in Q9):** report it as an
-> `explicit_refusal_rate` **lower bound** + a `non_refusals` **review queue**, NOT a hallucination count; the
-> robust semantic verdict is Q9's LLM-as-judge. ADR `docs/adr/0002-generation.md`; note
-> `docs/learning/Q8-generation.md`; result `eval/results/refusal-20260721T092240_787936Z.json` (re-run on
-> 2026-07-21 so the committed artifact carries the honest field names — the earlier runs still said
-> "hallucinations: 2"). Offline suite = **94 pass + 4 deselected (live), 0 skip**; ruff + black clean.
-> **Q1–Q7 committed through `a67a4a4`; Q8 lands in this commit.** **Next = Q9** (full RAGAS answer-eval —
-> the LLM-as-judge the trap run proved is needed)._
+> _Last updated: 2026-07-21 — **Phase 2 retrieval: Q1–Q9 COMPLETE; the LLM-as-judge answer baseline is
+> recorded.** Q9 added the RAGAS harness (`ragas==0.4.3`) as **two separate commands** so a run is never
+> wasted against the free-tier quota: phase A (`eval/produce.py`) runs the real `retrieve()`+`generate()`
+> once and caches every answer *with the exact contexts it saw* to `eval/results/answers-<stamp>.jsonl`;
+> phase B (`eval/ragas_eval.py`) judges that file, so re-scoring never re-pays for generation. A sliding-
+> window `AsyncRateLimiter` (`eval/throttle.py`) holds the judge to 15 RPM and a pre-flight budget guard
+> aborts before spending. Three metrics, each blaming one edge of the RAG triad: **faithfulness** (C↔a,
+> generation), **answer relevancy** (q↔a, prompt), **context recall** (retrieval, needs the reference);
+> context *precision* deliberately skipped — it re-measures Q4's human-labeled MRR/hit@k at ~25% of the
+> budget. Traps get faithfulness **only** (answer relevancy multiplies by `int(not all_noncommittal)`, so a
+> correct refusal scores exactly 0). **Baseline (rerank ON, strictness 3, 500 requests, zero metric
+> failures):** golden(48) **faithfulness 0.971 · answer relevancy 0.930 · context recall 0.958**;
+> trap(10) **faithfulness 0.597**. **Both headline numbers mislead, in opposite directions** — every
+> sub-1.0 row was hand-checked: the 2 zero-recall rows have *correct* answers and *correct* retrieval
+> (the judge is right that a headerless table chunk doesn't name its company → **chunk context loss**,
+> direct evidence for the deferred enrich stage), and trap 0.597 is **not a 40% hallucination rate** (all
+> 10 trap answers were correct, zero fabrications; faithfulness splits by answer *shape* — a bare "I don't
+> know." scores 0.0 for having no claims to support). Two live-caught bugs fixed: ragas' `llm_factory`
+> builds a *sync* client (replaced with an identical-signature `_llm_factory`), and `gemini-embedding-2`
+> fuses a list of strings into one vector (per-text fan-out; the same M4 trap). Dependency **ceiling**:
+> `langchain-community<0.4` — ragas 0.4.3 imports a module 0.4.x deleted. Note `docs/learning/Q9-ragas.md`.
+> Offline suite = **132 pass + 5 deselected (live), 0 skip**; ruff clean, black clean apart from the
+> pre-existing immutable `test_parse.py`. **Q1–Q8 committed through `cd258f5`; Q9 lands in this commit.**
+> **Next = Q10** (`POST /ask` + the per-query structured log)._
 
 ## How to read the scores
 
@@ -50,9 +55,9 @@ The gap between the two numbers *is the story*: design risk is bought down befor
 | 7 | AI / ML | Gemini LLM, embeddings, reranker, Guardrails, LangGraph | ~30% | **~44%** |
 | 8 | Auth & isolation | Supabase JWT (ES256/JWKS) + RLS | ~5% | **~30%** |
 | 9 | Deployment / Infra | Docker local + one-time Fargate | ~30% | **~40%** |
-| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~18% | **~31%** |
+| 10 | Observability & Evaluation | Sentry, LangSmith, structured logs, RAGAS golden set | ~32% | **~44%** |
 
-**Weighted overall: ~35–37% (code-only) · ~51% (code + design).**
+**Weighted overall: ~37–39% (code-only) · ~52–53% (code + design).**
 
 ## Notes per layer (why the score, what's next)
 
@@ -111,8 +116,13 @@ The gap between the two numbers *is the story*: design risk is bought down befor
    and a no-billable-call refusal on empty context. The refusal eval over the 10 traps ran live: **0/10
    hallucinations**, with the keyword metric honestly relabelled an `explicit_refusal_rate` lower bound
    (robust judgment deferred to Q9). Entire pipeline shape is now built end to end (hybrid → RRF →
-   cross-encoder → generate); approved Q1–Q10 breakdown in `docs/PHASE2-PLAN.md`. **Next = Q9 (full RAGAS
-   answer-eval — the LLM-as-judge).**
+   cross-encoder → generate); approved Q1–Q10 breakdown in `docs/PHASE2-PLAN.md`. **Q9 measured that pipeline
+   end to end with an LLM judge** (Layer 10) — no pipeline code changed (eval *measures*, it does not fix),
+   but it produced the first evidence-backed defect in the read path: **chunk context loss** (a table chunk
+   arrives as a bare numeric grid with no company name, so the generator answers correctly only by inferring
+   attribution from neighbouring chunks — an inference the context doesn't strictly license, and a confident-
+   swap risk when two similar tables share the window). That is the case *for* the deferred M-enrich stage.
+   **Next = Q10 (`POST /ask` + per-query structured log).**
 6. **Data & storage** — Postgres+pgvector up; `documents`+`chunks` schema applied &
    round-trip tested; local-disk storage seam done. **HNSW index + `tsvector` column now
    switched on (Q1, migration `003`)** — both derived from stored data, applied with no
@@ -148,8 +158,21 @@ The gap between the two numbers *is the story*: design risk is bought down befor
     **lower bound** (keyword `is_refusal`) plus a `non_refusals` review queue. The trap run surfaced the
     metric's own limit — a keyword check can't tell a correct grounded negation from a fabrication — which is
     exactly the case for the **RAGAS faithfulness LLM-as-judge in Q9** (recorded in the
-    `eval-metrics-honest-labeling` memory). Still missing: RAGAS answer-eval (Q9), tracing (LangSmith/Sentry),
-    the per-query query log (Q10). Logging contract + "eval as substrate" strategy predate this.
+    `eval-metrics-honest-labeling` memory). **Q9 built that judge** — `ragas==0.4.3` driven by
+    `eval/produce.py` (phase A: cache answers + their exact contexts) and `eval/ragas_eval.py` (phase B:
+    judge the cached file), paced by `eval/throttle.py`'s sliding-window limiter and guarded by a pre-flight
+    budget estimate. Baseline `eval/results/ragas-20260721T131433_136492Z.json` over
+    `answers-20260721T123921_657092Z.jsonl`: golden(48) **faithfulness 0.971 · answer relevancy 0.930 ·
+    context recall 0.958**, trap(10) **faithfulness 0.597**. **Reported honestly, per the standing rule:**
+    the judge is the *same model* that wrote the answers (**self-graded → biased upward**), scores are
+    non-deterministic at temperature 0 (a delta under ~0.05 over N=48 is noise), and the trap 0.597 is a
+    **metric artifact, not a hallucination rate** — faithfulness scores answer *shape*, so a bare "I don't
+    know." earns 0.0 for having no claims to support. Notably T5 and T8, the two the Q8 keyword metric
+    wrongly *failed*, both score **1.0** here — complementary blind spots, which is why `eval/refusal.py`
+    stays *beside* the judge rather than being replaced by it. **As a regression ruler:** golden faithfulness
+    and recall sit near ceiling (3/48 and 2/48 below 1.0) and will only catch large regressions; **answer
+    relevancy is the sensitive one**. Still missing: tracing (LangSmith/Sentry) and the per-query query log
+    (Q10). Logging contract + "eval as substrate" strategy predate this.
 
 ## Ingestion milestones (Layer 4 detail)
 
@@ -183,7 +206,7 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
 | Q6 | Hybrid fusion — Reciprocal Rank Fusion (semantic + lexical concurrently) | ✅ complete & verified, committed `716c4a2` — `app/retrieve/fuse.py` pure `reciprocal_rank_fusion(rankings, *, k_constant=60)` (rank-based, scale-free, dedup-by-summing = cross-list agreement); `retrieve()` REWIRED hybrid: embed once + `asyncio.gather(_semantic, _lexical)` **one session per arm** + fuse + top-k, graceful-degrades to semantic when lexical empty. Score is now the RRF fused value, not cosine → **architect-authorized** revision of one immutable Q3 assert. `k_constant` wired as `Settings.retrieval_rrf_k_constant`. 7 tests (suite 75+3, 0-skip) + note `docs/learning/Q6-rrf.md`. **Hybrid eval MRR 0.895 · hit@1 0.812** (+0.020 hit@1 / +0.014 MRR vs semantic, zero regression) |
 | Q7 | Cross-encoder rerank — retrieve-wide → rerank to top-k; **provider decision (ADR)** | ✅ complete & verified, committed `a67a4a4` — `app/retrieve/rerank.py`: **local** `cross-encoder/ms-marco-MiniLM-L-6-v2` via the already-installed `transformers` (**zero new deps**; ~90 MB model, lazy `@lru_cache` load, `asyncio.to_thread` off the loop, `_get_reranker` seam). `retrieve()` rewired with a **gated** pool-widen → rerank → truncate branch (`rerank_enabled` default OFF → byte-identical to Q6; `retrieval_candidate_k=50` pool; score becomes the reranker logit). `k` stays the FINAL size, so callers + the 4 immutable Q3 specs + 7 fuse specs unchanged. **ADR `docs/adr/0001-reranker-provider.md`** (rejected managed API / Gemini-as-reranker); note `docs/learning/Q7-rerank.md`. 6 tests (`test_rerank.py` 5 + `test_retrieve_rerank.py` 1); suite **81+3**, 0-skip. **Eval (rerank ON):** MRR 0.895→**0.927**, hit@1 0.812→**0.896**, hit@5 0.979→**1.000**, hit@3 0.979→0.938 (accepted 2-Q regression) — `eval/results/retrieval-20260718T192246_887014Z.json` |
 | Q8 | Generation — grounded, cited answer via a new Gemini generation client (ADR: model + citation granularity) | ✅ complete & verified (this commit) — `app/generate/generate.py`: `generate(query, chunks) → GeneratedAnswer` (Pydantic `answer: str` + `citations: list[int]`). Three grounding levers: **system instruction** (only-from-context / say "I don't know" / cite chunk ids), **temperature 0**, **structured JSON** (`response_mime_type="application/json"` + `response_schema=GeneratedAnswer`, same class as schema *and* parse target). **Chunk-level citations** (`chunk.id`; char-span deferred). Empty context → local refusal, **no billable call**. Model `gemini-3.1-flash-lite` (env `GENERATION_MODEL`, temp/max-tokens Settings). Embed + generation unified into shared `app/gemini_client.py` (one process-cached client; `embed.py` keeps `_get_client` alias → immutable embed tests untouched). **No new pip dep.** ADR `docs/adr/0002-generation.md`; note `docs/learning/Q8-generation.md`. **Refusal eval** — `eval/refusal.py` + `eval/build_traps.py` (→ `traps.jsonl`) over 10 traps; live run **0/10 hallucinations**, keyword metric relabelled `explicit_refusal_rate` **lower bound** + `non_refusals` review queue (architect: relabel now, judge in Q9); `eval/results/refusal-20260721T092240_787936Z.json`. Tests: `test_generate.py` (6, incl. 1 live), `test_refusal.py` (5), `test_refusal_report.py` (3); suite **94+4**, 0-skip |
-| Q9 | Full RAGAS answer-eval (faithfulness / relevance / context precision+recall) | ⬜ |
+| Q9 | Full RAGAS answer-eval (faithfulness / relevance / context recall — **precision dropped**) | ✅ complete & verified (this commit) — `ragas==0.4.3`, judge `gemini-3.1-flash-lite`, **two-phase by design** (the free tier is 15 RPM / 500 generation requests per day, so a run must never be wasted): **phase A** `eval/produce.py` runs the real `retrieve()`+`generate()` once and caches `{id, question, reference, retrieved_chunk_ids, contexts, answer, citations}` to `answers-<stamp>.jsonl` — both the judge's input *and* the audit trail of what each score was computed against; **phase B** `eval/ragas_eval.py` judges that file, so re-scoring costs nothing in generation. `eval/throttle.py` = pure `AsyncRateLimiter` (sliding window — matches the literal "15 per minute" quota; injectable clock/sleep so its spec is offline), plus a pre-flight `estimate_requests` guard that aborts *before* spending. Three metrics, one per edge of the RAG triad — **faithfulness** (C↔a → generation), **answer relevancy** (q↔a → prompt), **context recall** (→ retrieval, needs the reference); **context precision deliberately excluded** (an LLM's guess at the ranking property Q4 already measures with human-approved chunk-ids, at ~25% of the budget). Traps get faithfulness **only** — answer relevancy multiplies by `int(not all_noncommittal)`, so a *correct* refusal scores exactly 0. Two bugs only a live run could catch: ragas' own `llm_factory` builds a **sync** client (replaced by an identical-signature `_llm_factory` with `use_async=True`), and `gemini-embedding-2` folds a `list[str]` into **one fused vector** (per-text fan-out in `ThrottledEmbeddings` — the same M4 trap, second sighting). Dependency **ceiling**: `langchain-community<0.4` (ragas 0.4.3 imports a module 0.4.x removed → `import ragas` fails outright). 4 modules + 6 test files; note `docs/learning/Q9-ragas.md`; suite **132+5**, 0-skip. **Baseline recorded 2026-07-21** (rerank ON, strictness 3, 500 requests, **zero metric failures**) — `eval/results/ragas-20260721T131433_136492Z.json`: golden(48) **faithfulness 0.971 · answer relevancy 0.930 · context recall 0.958**, trap(10) **faithfulness 0.597**. See Layer 10 for why both headline numbers mislead |
 | Q10 | Query API endpoint `POST /ask` (request-shaped) + per-query structured log | ⬜ |
 
 ## Open loose ends (inside "done" work)
@@ -204,7 +227,8 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   key guard). Remaining debt is a single **pre-existing, immutable** file: `tests/test_parse.py`
   isn't `black`-clean (two commented-out lines). Left untouched on purpose (editing immutable
   specs is a deliberate call) — worth a separate formatting-only cleanup commit.
-- **M0–M8 + Phase 2 Q1–Q6 are committed** — the retrieval chain runs `716c4a2` (Q6 hybrid fusion) →
+- **M0–M8 + Phase 2 Q1–Q8 are committed** — the read-path chain runs `cd258f5` (Q8 generation) →
+  `a67a4a4` (Q7 rerank) → `716c4a2` (Q6 hybrid fusion) →
   `e64dfbf` (Q5 lexical) → `849452d` (Q4 baseline artifacts) → `6730c34` (worker persistent-loop fix) →
   `e69af7a` (Q4 harness) → `77e831b` (eval corpus: 8 docs + 48-Q golden set) → `10d305c` (de-contaminate
   eval corpus) → `3fcc2f7` (Phase 2 Q3) → `557d71e` (changelog extraction) → `8efed87` (Q2) → `f53a596`
@@ -221,8 +245,15 @@ code **plus** a teaching note (`docs/learning/Qx-*.md`); genuine forks also get 
   `embed.py`/`config.py` edits, `eval/refusal.py` + `eval/build_traps.py` + `traps.jsonl`, the three test
   files, ADR 0002, the Q8 note, and **one** `refusal-*.json` result (the 2026-07-21 re-run; the two
   earlier runs were discarded because they carried the pre-relabel `hallucinations` field the current
-  reporter deliberately no longer emits). **This session:** Q8 implementation + these
-  `PROGRESS.md`/`HANDOFF.md` refreshes. (`.vscode/settings.json` — SQLTools connection + Pylance
+  reporter deliberately no longer emits). **Q9 (RAGAS answer-eval) lands in THIS commit** — `eval/throttle.py`,
+  `eval/produce.py`, `eval/judge.py`, `eval/ragas_eval.py`, six test files (`test_throttle.py`,
+  `test_produce.py`, `test_produce_throttle.py`, `test_judge.py`, `test_eval_ragas.py`, `test_ragas_live.py`),
+  `docs/learning/Q9-ragas.md`, the `requirements.txt` pins (`ragas==0.4.3` + the `langchain-community<0.4`
+  ceiling + `jsonref`, `pydantic-settings` 2.7.1→2.14.2), the `eval-run` skill's two-phase invocation, and the
+  two baseline artifacts (`answers-20260721T123921_657092Z.jsonl` + `ragas-20260721T131433_136492Z.json` —
+  the answers file is committed *deliberately*: without it a score can't be re-checked against the contexts
+  that produced it). **This session:** the Q9 live baseline + these `PROGRESS.md` refreshes.
+  (`.vscode/settings.json` — SQLTools connection + Pylance
   `python.analysis.extraPaths` for the `app.*`/`eval.*` import roots — is git-ignored.)
 
 ## Changelog

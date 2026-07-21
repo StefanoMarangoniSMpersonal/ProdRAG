@@ -7,7 +7,9 @@ python-multipart==0.0.20
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 pgvector==0.3.6
-pydantic-settings==2.7.1
+# Bumped 2.7.1 -> 2.14.2 when ragas landed (below): ragas' dependency chain requires
+# >=2.9. No app change was needed — Settings is plain BaseSettings.
+pydantic-settings==2.14.2
 
 # M2 parse. Unstructured partitions every format into typed elements. Extras are
 # per-format: `md` pulls the Markdown dep, `pdf` adds the PDF/OCR stack (torch +
@@ -32,3 +34,23 @@ google-genai==2.10.0
 # caps redis at <6.5, so do NOT pin a bare redis 8.x — it would conflict). On Windows the
 # worker must run with `--pool=solo` (the default prefork pool is broken there).
 celery[redis]==5.6.3
+
+# Q9 answer eval. RAGAS supplies the published LLM-as-judge metrics (faithfulness,
+# answer relevancy, context recall) so we're measuring against a standard implementation
+# rather than prompts we invented. Used via its NATIVE Google provider
+# (`llm_factory(..., provider="google", client=...)`), which consumes the google-genai
+# client we already build in app/gemini_client.py — no langchain-google-genai, no second
+# client. Eval-only: nothing under app/ imports ragas.
+#
+# langchain-community is PINNED BELOW 0.4 on purpose: ragas 0.4.3's llms/base.py imports
+# `langchain_community.chat_models.vertexai`, which 0.4.x removed — with 0.4.2 installed,
+# `import ragas` fails outright with ModuleNotFoundError. ragas' own dependency range is
+# too loose to prevent this, so the ceiling lives here. Revisit when ragas drops the
+# import; check before ever loosening it.
+ragas==0.4.3
+langchain-community<0.4
+# instructor's Gemini path dereferences JSON-schema $refs via jsonref, but declares it
+# only under an optional extra — without it every judged call dies with
+# ModuleNotFoundError deep inside instructor. Pinned explicitly for the same reason
+# python-multipart is.
+jsonref==1.1.0
