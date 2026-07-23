@@ -33,6 +33,11 @@ google-genai==2.10.0
 # `[redis]` extra pulls kombu + a redis client version Celery is tested against (Celery
 # caps redis at <6.5, so do NOT pin a bare redis 8.x — it would conflict). On Windows the
 # worker must run with `--pool=solo` (the default prefork pool is broken there).
+#
+# The P3 semantic cache (app/cache.py) REUSES this same redis client — its async surface
+# (`redis.asyncio`) ships in the version `[redis]` pulls in — so it adds NO new runtime
+# dependency. It runs on a separate logical DB (/1, vs the broker's /0). Keep redis <6.5:
+# Celery caps it there, and loosening it to an 8.x would break the worker.
 celery[redis]==5.6.3
 
 # Q9 answer eval. RAGAS supplies the published LLM-as-judge metrics (faithfulness,

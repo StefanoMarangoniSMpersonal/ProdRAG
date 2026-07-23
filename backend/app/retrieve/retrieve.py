@@ -73,11 +73,27 @@ def _ms(since: float) -> float:
     return round((perf_counter() - since) * 1000, 1)
 
 
+async def embed_query(query: str) -> list[float]:
+    """Embed a query STRING into its vector, in the RETRIEVAL_QUERY role.
+
+    The single home for the query-side embed: wrap the string with `as_retrieval_query`
+    (the query/document asymmetry — see the module docstring), embed the one-element
+    batch, take `[0]`. Factored out because more than one caller now needs the query
+    vector *before* retrieval runs — the P3 semantic cache embeds here to look up a
+    cached answer, and P4/HyDE will embed here too — and paying Gemini twice for one
+    query (once in the cache, once inside `retrieve`) would be wasteful. `retrieve`
+    calls this when no vector is supplied; a caller that already embedded passes the
+    vector down via `query_embedding=`.
+    """
+    return (await embed_texts([as_retrieval_query(query)]))[0]
+
+
 async def retrieve(
     query: str,
     *,
     k: int | None = None,
     owner_id: uuid.UUID = DEV_OWNER_ID,
+    query_embedding: list[float] | None = None,
 ) -> RetrievalResult:
     """Retrieve the `k` chunks most relevant to `query`, end to end (hybrid).
 
@@ -108,11 +124,17 @@ async def retrieve(
     # never change.
     pool_k = settings.retrieval_candidate_k if settings.rerank_enabled else k
 
-    # Query STRING -> vector, in the QUERY role. One text in, one vector out ([0]). Only
-    # the semantic arm needs the vector; the lexical arm searches the raw query string.
+    # Query STRING -> vector, in the QUERY role. One text in, one vector out. Only the
+    # semantic arm needs the vector; the lexical arm searches the raw query string. When
+    # the caller already embedded (P3 cache / P4 HyDE share ONE embed with the lookup),
+    # it hands the vector in via `query_embedding=` and we skip the call, recording
+    # embed_ms = 0.0 so the timings key set the immutable tests pin stays present.
     t = perf_counter()
-    query_embedding = (await embed_texts([as_retrieval_query(query)]))[0]
-    timings["embed_ms"] = _ms(t)
+    if query_embedding is None:
+        query_embedding = await embed_query(query)
+        timings["embed_ms"] = _ms(t)
+    else:
+        timings["embed_ms"] = 0.0
 
     # Each arm opens its OWN session: one async DB connection can't service two queries
     # at once, so the two concurrent arms can't share a session. Each search is a pure

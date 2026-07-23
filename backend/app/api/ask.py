@@ -50,6 +50,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import cache
 from app.config import get_settings
 from app.db import get_session
 from app.generate.generate import generate
@@ -60,7 +61,7 @@ from app.guards import (
     validate_query,
 )
 from app.models import DEV_OWNER_ID, QueryLog
-from app.retrieve.retrieve import retrieve
+from app.retrieve.retrieve import embed_query, retrieve
 
 router = APIRouter(tags=["ask"])
 logger = logging.getLogger("app.api.ask")
@@ -112,8 +113,92 @@ async def ask(
 
     started = perf_counter()
 
+    # SEMANTIC CACHE (P3), gated. When enabled, embed the query ONCE here and reuse the
+    # vector for both the cache lookup and — on a miss — retrieval, so a miss never pays
+    # Gemini for the same embed twice. On a HIT we return the stored answer without
+    # retrieving or generating. Cache-off: this whole block is skipped, query_embedding
+    # stays None, retrieve() embeds internally, and ask() is byte-identical to Q10/P2.
+    query_embedding: list[float] | None = None
+    if settings.cache_enabled:
+        t = perf_counter()
+        query_embedding = await embed_query(query)
+        embed_ms = round((perf_counter() - t) * 1000, 1)
+
+        t = perf_counter()
+        hit = await cache.cache_get(query_embedding, DEV_OWNER_ID)
+        cache_lookup_ms = round((perf_counter() - t) * 1000, 1)
+
+        if hit is not None:
+            query_id = uuid.uuid4()
+            timings = {
+                "embed_ms": embed_ms,
+                "cache_lookup_ms": cache_lookup_ms,
+                "total_ms": round((perf_counter() - started) * 1000, 1),
+            }
+            # The audit contract still fires on a hit — same two sinks — but token
+            # counts are null (no generation ran) and cache_hit=true, so hit-rate and
+            # cost-saved are computable from the log. The stored citations are already
+            # the P2-repaired (post-guard) list, so a hit inherits the guarantee the
+            # miss that created it earned. The row write stays best-effort as below.
+            logger.info(
+                "ask.query %s",
+                json.dumps(
+                    {
+                        "query_id": str(query_id),
+                        "query": query,
+                        "answer": hit.answer,
+                        "citations": hit.citations,
+                        "valid_citations": hit.valid_citations,
+                        "phantom_citations": hit.phantom_citations,
+                        "retrieved_chunk_ids": hit.retrieved_chunk_ids,
+                        "reranked_chunk_ids": hit.final_chunk_ids,
+                        "context_chars": hit.context_chars,
+                        "prompt_tokens": None,
+                        "completion_tokens": None,
+                        "total_tokens": None,
+                        "cache_hit": True,
+                        "timings_ms": timings,
+                    }
+                ),
+            )
+            try:
+                session.add(
+                    QueryLog(
+                        id=query_id,
+                        owner_id=DEV_OWNER_ID,
+                        query=query,
+                        answer=hit.answer,
+                        citations=hit.citations,
+                        retrieved_chunk_ids=hit.retrieved_chunk_ids,
+                        final_chunk_ids=hit.final_chunk_ids,
+                        context_chars=hit.context_chars,
+                        prompt_tokens=None,
+                        completion_tokens=None,
+                        total_tokens=None,
+                        generation_model=hit.generation_model,
+                        # cache_hit rides in the JSONB (no migration) alongside timings.
+                        timings_ms={**timings, "cache_hit": True},
+                    )
+                )
+                await session.commit()
+            except (
+                Exception
+            ):  # noqa: BLE001 — never fail the answer over an audit write
+                logger.exception("ask.query_log_write_failed query_id=%s", query_id)
+
+            return AskResponse(
+                query_id=query_id,
+                answer=hit.answer,
+                citations=hit.valid_citations,
+                retrieved_chunk_ids=hit.retrieved_chunk_ids,
+                reranked_chunk_ids=hit.final_chunk_ids,
+                timings_ms=timings,
+            )
+
+    # MISS (or cache disabled). query_embedding is the shared vector on a miss, or None
+    # when the cache is off (retrieve() then embeds internally, exactly as in Q10).
     t = perf_counter()
-    result = await retrieve(query)
+    result = await retrieve(query, query_embedding=query_embedding)
     retrieve_ms = round((perf_counter() - t) * 1000, 1)
 
     t = perf_counter()
@@ -156,28 +241,32 @@ async def ask(
 
     # One greppable line per query. The stage breakdown from retrieval rides along under
     # its own key so the flat top-level timings stay stable as stages are added.
-    logger.info(
-        "ask.query %s",
-        json.dumps(
-            {
-                "query_id": str(query_id),
-                "query": query,
-                "answer": answer.answer,
-                # RAW model citations (what the model did) stay under the frozen
-                # key; the P2 partition rides alongside as accumulated fields.
-                "citations": answer.citations,
-                "valid_citations": check.valid_citations,
-                "phantom_citations": check.phantom_citations,
-                "retrieved_chunk_ids": result.candidate_chunk_ids,
-                "reranked_chunk_ids": final_ids,
-                "context_chars": context_chars,
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-                "timings_ms": {**timings, "retrieval": result.timings_ms},
-            }
-        ),
-    )
+    log_record = {
+        "query_id": str(query_id),
+        "query": query,
+        "answer": answer.answer,
+        # RAW model citations (what the model did) stay under the frozen key; the P2
+        # partition rides alongside as accumulated fields.
+        "citations": answer.citations,
+        "valid_citations": check.valid_citations,
+        "phantom_citations": check.phantom_citations,
+        "retrieved_chunk_ids": result.candidate_chunk_ids,
+        "reranked_chunk_ids": final_ids,
+        "context_chars": context_chars,
+        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+        "completion_tokens": getattr(usage, "completion_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+        "timings_ms": {**timings, "retrieval": result.timings_ms},
+    }
+    # With the cache on, tag the miss so hit-rate is computable from the log stream.
+    # With the cache off the key is omitted, keeping the line byte-identical to Q10/P2.
+    if settings.cache_enabled:
+        log_record["cache_hit"] = False
+    logger.info("ask.query %s", json.dumps(log_record))
+
+    row_timings = {**timings, **result.timings_ms}
+    if settings.cache_enabled:
+        row_timings["cache_hit"] = False
 
     # The durable half. Best-effort: an audit failure must not cost the user an answer
     # that has already been generated (and billed), so it is logged and swallowed.
@@ -196,12 +285,32 @@ async def ask(
                 completion_tokens=getattr(usage, "completion_tokens", None),
                 total_tokens=getattr(usage, "total_tokens", None),
                 generation_model=get_settings().generation_model,
-                timings_ms={**timings, **result.timings_ms},
+                timings_ms=row_timings,
             )
         )
         await session.commit()
     except Exception:  # noqa: BLE001 — deliberately broad: never fail the answer
         logger.exception("ask.query_log_write_failed query_id=%s", query_id)
+
+    # Populate the cache with the POST-GUARD answer so the next paraphrase can skip this
+    # whole pipeline. Only on a real miss (query_embedding is the vector we looked up
+    # with); cache-off leaves it None and this is skipped. cache_set is fail-open — a
+    # write failure is logged inside cache.py and never reaches here.
+    if settings.cache_enabled and query_embedding is not None:
+        await cache.cache_set(
+            query_embedding,
+            DEV_OWNER_ID,
+            cache.CachedAnswer(
+                answer=answer.answer,
+                citations=answer.citations,
+                valid_citations=check.valid_citations,
+                phantom_citations=check.phantom_citations,
+                retrieved_chunk_ids=result.candidate_chunk_ids,
+                final_chunk_ids=final_ids,
+                context_chars=context_chars,
+                generation_model=get_settings().generation_model,
+            ),
+        )
 
     return AskResponse(
         query_id=query_id,

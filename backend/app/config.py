@@ -134,6 +134,26 @@ class Settings(BaseSettings):
     citation_guard_enabled: bool = True
     max_query_chars: int = 4000
 
+    # Semantic answer cache (P3). cache_enabled gates the whole feature: OFF (default)
+    # leaves POST /ask byte-identical to Q10/P2 — no early embed, no Redis call, and the
+    # offline suite needs no Redis — so set CACHE_ENABLED=true only for live / eval.
+    # When ON, /ask embeds the query once, looks for a cached answer whose stored query
+    # vector is within cache_similarity_threshold (cosine) and, on a hit, returns it
+    # WITHOUT retrieving or generating. cache_redis_url points at Redis DB /1 (isolated
+    # from Celery's broker on /0, so a cache flush never touches the queue).
+    # cache_similarity_threshold is the correctness dial: too LOW serves a stored answer
+    # for a materially different question (a wrong-answer "hit"); 0.95 is deliberately
+    # tight. cache_ttl_seconds bounds staleness — a doc ingested now isn't reflected in
+    # cached answers until their TTL lapses (event-based invalidation is a deferred
+    # upgrade). cache_max_entries bounds the per-owner scan / memory (oldest evicted).
+    # Override via CACHE_ENABLED / CACHE_REDIS_URL / CACHE_SIMILARITY_THRESHOLD /
+    # CACHE_TTL_SECONDS / CACHE_MAX_ENTRIES.
+    cache_enabled: bool = False
+    cache_redis_url: str = "redis://localhost:6379/1"
+    cache_similarity_threshold: float = 0.95
+    cache_ttl_seconds: int = 3600
+    cache_max_entries: int = 500
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

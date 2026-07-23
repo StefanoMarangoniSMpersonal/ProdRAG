@@ -15,34 +15,40 @@ committed `fdd9b85` (unpushed). What the finished pipeline does and every Q1–Q
 `phase2-retrieval` memory. The Phase 2.5 milestone plan (P0–P6, backend-first, **auth deferred to
 Phase 3**) is **`docs/PHASE2.5-PLAN.md`** (spec); live status is **`docs/PROGRESS-PHASE2.5.md`**.
 
-**P0 (warm-up) committed `2242256`; P2 (guardrails) DONE — just committed. P1 (streaming) PARKED.**
-P0: `app/main.py` `lifespan` warms `_get_reranker` (gated on `rerank_enabled`, best-effort). P2:
-new framework-free `app/guards.py` — `validate_query` (blank + `max_query_chars` length cap → 400
-pre-spend) and `check_citations` (partitions the model's citations into valid/phantom against
-`final_ids`, the chunks actually shown). `ask.py` wired: phantom → `ask.citation_violation` WARNING
-+ a repaired `AskResponse.citations` (repair-and-flag, HTTP 200 — never discard a billed answer);
-the **frozen audit contract is accumulated, not weakened** (stdout line + `query_logs` row keep the
-RAW model citations; the stdout line gains `valid_citations`/`phantom_citations`; no migration).
-Kill-switch `citation_guard_enabled` (default on). `test_guardrails.py` (13, red-first) + ADR `0004`
-+ `docs/learning/P2-guardrails.md`. Immutable `test_ask.py` untouched (repair is a no-op on the
-existing `[13] ⊆ {13,11}` case). Suite **160+5**, 0-skip. Future input-guard expansion
-(prompt-injection / PII) is deferred to its own phase (ADR `0004` + PROGRESS deferred list).
+**P0 warm-up committed `2242256`; P2 guardrails committed `7e76500`; P3 semantic cache DONE
+(uncommitted); P1 streaming PARKED.** Per-milestone detail (seams, decisions, gotchas) is in the
+`phase2.5-hardening` memory + each `docs/learning/P<n>-*.md` note + `docs/PROGRESS-PHASE2.5.md` —
+not re-narrated here. In brief:
+
+- **P3 (semantic cache)** — new fail-open `app/cache.py` (per-owner in-Redis cosine scan; **no new
+  dep**, reuses the `celery[redis]` client on Redis DB **/1**). `retrieve()` gained `embed_query()`
+  + an optional `query_embedding=` param (share one embed; also feeds P4). `ask.py` gated on
+  `cache_enabled` (**default OFF** → cache-off byte-identical to Q10/P2, immutable `test_ask.py`/
+  `test_retrieve.py` untouched); a hit skips retrieve+generate and replays the **post-guard**
+  answer. **Audit contract accumulated** — `cache_hit` on both sinks (stdout field +
+  `query_logs.timings_ms` JSONB; **no migration**), tokens null on a hit. `test_cache.py` (10) +
+  `test_ask_cache.py` (3), red-first + `docs/learning/P3-semantic-cache.md`. Suite **173+5**,
+  0-skip; **live-proven** (paraphrase hit, retrieve+generate skipped, both sinks correct).
 
 ## Immediate next step
 
-**P3 — Redis semantic cache** (P1 streaming is parked — perceived-latency polish, not blocking).
-New `app/cache.py` within the **`redis<6.5`** pin: cache before retrieval, skip retrieve+generate
-on a near-duplicate query. Needs `retrieve()` to expose the query vector (also useful for P4);
-event-loop-bound client. Test-first. Full spec in `docs/PHASE2.5-PLAN.md`; status table in
-`docs/PROGRESS-PHASE2.5.md`.
+**P4 — Query rewrite / HyDE** (P1 streaming stays parked). Transform the query at the top of
+`retrieve()` — reuse the new `embed_query` seam; the semantic vs lexical arms may take different
+texts. RAG-core fork → **ADR `0005`**, and **eval-gated**: re-run `eval.run` (rerank ON) vs the Q7
+baseline (**MRR 0.927 · hit@1 0.896**) to decide if it stays. Full spec in `docs/PHASE2.5-PLAN.md`;
+status table in `docs/PROGRESS-PHASE2.5.md`.
 
-## Parked architect decisions (open, not blocking P3)
+## Parked architect decisions (open, not blocking P4)
 
 1. **Trap faithfulness 0.597 artifact** — fix via a refusal-specific metric or an always-explain-
    refusals prompt change (a generator change, your call). Context: `eval-metrics-honest-labeling`
    memory.
 2. **`tests/test_parse.py`'s two commented-out `Falcon-9X` asserts** — a silently weakened
    *immutable* test; restoring them is a spec decision (yours).
+3. **Cache-key freshness (P3)** — the semantic cache keys only on `(owner_id, query_vector)`, so a
+   newly-ingested doc isn't reflected until the 1 h TTL lapses. Fold a corpus/model epoch into the
+   key (instant invalidation) vs event-based invalidation vs leave TTL-only — your call, deferred to
+   P4/later. Context: `docs/learning/P3-semantic-cache.md` §7 + `phase2.5-hardening` memory.
 
 ## Open blockers / cautions
 
@@ -61,8 +67,9 @@ event-loop-bound client. Test-first. Full spec in `docs/PHASE2.5-PLAN.md`; statu
 - **Tests:** `backend\.venv\Scripts\python.exe -m pytest` from repo root. **A SKIP exits 0 → false
   green** (`testing-skips-are-not-passes` memory). Docker daemon must be up (testcontainers).
 - **Ask / eval / RAGAS commands + quotas:** in `docs/PHASE2-PLAN.md` (Verification) and the
-  `eval-run` skill. Rerank is OFF unless `RERANK_ENABLED=true` before starting the API. Windows
-  env gotchas (venv path, `curl.exe`, psql `NOTICE`): `phase1-ingestion` memory.
+  `eval-run` skill. Rerank is OFF unless `RERANK_ENABLED=true` and the **semantic cache** OFF unless
+  `CACHE_ENABLED=true` (Redis DB /1) — both set before starting the API. Windows env gotchas (venv
+  path, `curl.exe`, psql `NOTICE`): `phase1-ingestion` memory.
 
 ## Working rules (full text: CLAUDE.md)
 
