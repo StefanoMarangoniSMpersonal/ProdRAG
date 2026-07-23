@@ -8,7 +8,9 @@ Phase 0 exposes two health endpoints:
 No RAG, auth, or background work yet — this is just the spine.
 """
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,8 +21,11 @@ from app.api.ask import router as ask_router
 from app.api.documents import router as documents_router
 from app.config import get_settings
 from app.db import get_session
+from app.retrieve import rerank
 
 settings = get_settings()
+
+_startup_log = logging.getLogger("app.startup")
 
 # Give OUR loggers a handler. uvicorn configures only the `uvicorn.*` loggers, so
 # without this an `app.*` logger falls back to Python's lastResort handler — which is
@@ -35,7 +40,40 @@ logging.basicConfig(
     force=True,
 )
 
-app = FastAPI(title="ProdRAG API", version="0.0.1")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """P0 — warm the reranker once at startup so the first query isn't cold.
+
+    The cross-encoder (`rerank._get_reranker`, an `@lru_cache` loader) imports torch and
+    loads a ~90 MB model on first use — ~24.8 s if that happens on the first request,
+    ~2.3 s once warm. We pay that cost here instead, before any request arrives.
+
+    Gated on `rerank_enabled` (read FRESH from `get_settings()`, not the import-time
+    `settings`, so it stays monkeypatchable in tests): when rerank is OFF (the default)
+    we do NOTHING, preserving the deliberate laziness that keeps torch out of the default
+    path and the offline suite. The load runs via `asyncio.to_thread` so the CPU-bound
+    import+load never blocks the event loop.
+
+    Warm-up is BEST-EFFORT: any failure (e.g. no network to fetch the weights) is logged
+    and swallowed — startup continues and the first live query merely pays the cold cost,
+    exactly as before P0. A latency optimisation must never turn into a boot failure.
+    """
+    if get_settings().rerank_enabled:
+        try:
+            await asyncio.to_thread(rerank._get_reranker)
+            _startup_log.info("reranker warm-up complete (rerank enabled)")
+        except Exception:  # best-effort: never let warm-up crash startup
+            _startup_log.exception(
+                "reranker warm-up failed; first query will load it lazily"
+            )
+    else:
+        _startup_log.info("reranker warm-up skipped (rerank disabled)")
+
+    yield
+    # No shutdown work: the lru_cache dies with the process.
+
+
+app = FastAPI(title="ProdRAG API", version="0.0.1", lifespan=lifespan)
 
 # Allow the Next.js dev server to call us from the browser. Without this the
 # frontend fetch would be blocked by the browser's same-origin policy.
