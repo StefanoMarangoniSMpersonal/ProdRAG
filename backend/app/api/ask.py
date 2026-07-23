@@ -53,6 +53,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_session
 from app.generate.generate import generate
+from app.guards import (
+    EmptyQueryError,
+    QueryTooLongError,
+    check_citations,
+    validate_query,
+)
 from app.models import DEV_OWNER_ID, QueryLog
 from app.retrieve.retrieve import retrieve
 
@@ -89,15 +95,20 @@ async def ask(
     session: AsyncSession = Depends(get_session),
 ) -> AskResponse:
     """Answer `query` from the indexed corpus, and record the whole query."""
-    query = request.query.strip()
-    if not query:
-        # A blank question is a caller error we can know synchronously — reject it
-        # before retrieval embeds anything or generation spends a billable call. (Same
-        # stance as the empty-upload 400 in documents.py: validate what we can, now.)
+    settings = get_settings()
+
+    # INPUT guard (P2). A blank or over-long question is a caller error we can know
+    # synchronously — reject it before retrieval embeds anything or generation spends a
+    # billable call. (Same stance as the empty-upload 400 in documents.py: validate what
+    # we can, now.) validate_query is framework-free and raises plain ValueError
+    # subclasses; we map both to a 400 here so guards.py stays FastAPI-free.
+    try:
+        query = validate_query(request.query, max_chars=settings.max_query_chars)
+    except (EmptyQueryError, QueryTooLongError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Query must not be empty.",
-        )
+            detail=str(exc),
+        ) from exc
 
     started = perf_counter()
 
@@ -114,6 +125,28 @@ async def ask(
     query_id = uuid.uuid4()
     final_ids = [sc.chunk.id for sc in result.chunks]
     context_chars = sum(len(sc.chunk.content) for sc in result.chunks)
+
+    # OUTPUT guard (P2). The model was shown ONLY `final_ids`, so any citation
+    # outside that set is a phantom (invented, or lifted from the wider candidate
+    # pool it never saw). The partition is pure and always computed, so the audit
+    # log records the violation regardless of the kill-switch.
+    # `citation_guard_enabled` (default on) controls the two *actions*: flag it (a
+    # WARNING) and repair the client response (drop the phantom ids). Turned off, the
+    # model's raw citations flow straight through — a way to measure raw grounding in
+    # eval — while the log still shows what happened. Repair-and-flag, not
+    # fail-closed: the answer was already generated and billed, so we never turn a
+    # phantom citation into a 500 (the same best-effort stance as the audit write).
+    check = check_citations(answer.citations, final_ids)
+    guard_on = settings.citation_guard_enabled
+    if guard_on and check.has_violation:
+        logger.warning(
+            "ask.citation_violation query_id=%s phantom=%s shown=%s",
+            query_id,
+            check.phantom_citations,
+            final_ids,
+        )
+    client_citations = check.valid_citations if guard_on else answer.citations
+
     timings = {
         "retrieve_ms": retrieve_ms,
         "generate_ms": generate_ms,
@@ -130,7 +163,11 @@ async def ask(
                 "query_id": str(query_id),
                 "query": query,
                 "answer": answer.answer,
+                # RAW model citations (what the model did) stay under the frozen
+                # key; the P2 partition rides alongside as accumulated fields.
                 "citations": answer.citations,
+                "valid_citations": check.valid_citations,
+                "phantom_citations": check.phantom_citations,
                 "retrieved_chunk_ids": result.candidate_chunk_ids,
                 "reranked_chunk_ids": final_ids,
                 "context_chars": context_chars,
@@ -169,7 +206,10 @@ async def ask(
     return AskResponse(
         query_id=query_id,
         answer=answer.answer,
-        citations=answer.citations,
+        # The one client-visible P2 change: the repaired list (phantom ids dropped
+        # when the guard is on; a no-op when there's no phantom or the guard is off).
+        # The RAW list is preserved above in both audit sinks, so nothing is hidden.
+        citations=client_citations,
         retrieved_chunk_ids=result.candidate_chunk_ids,
         reranked_chunk_ids=final_ids,
         timings_ms=timings,

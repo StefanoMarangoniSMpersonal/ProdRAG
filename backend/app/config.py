@@ -121,6 +121,19 @@ class Settings(BaseSettings):
     generation_temperature: float = 0.0
     generation_max_output_tokens: int = 1024
 
+    # Guardrails (P2). Two guards around the read path, both typed Settings knobs.
+    # citation_guard_enabled gates the OUTPUT guard: ON (default) validates the model's
+    # citations against the chunks it was actually shown and repairs the client response
+    # by dropping phantom (never-shown) ids; OFF returns the model's raw citations
+    # unrepaired and emits no violation warning — a kill-switch to measure raw model
+    # grounding in eval. The check itself is pure and always computed for the audit
+    # log, so violations stay visible in the logs even with the guard off.
+    # max_query_chars is the INPUT guard's length cap: a query longer than this is
+    # rejected pre-spend (400), kept generously under the ~8,192-token embedding
+    # input limit. Override via CITATION_GUARD_ENABLED / MAX_QUERY_CHARS.
+    citation_guard_enabled: bool = True
+    max_query_chars: int = 4000
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
