@@ -16,8 +16,8 @@ committed `fdd9b85` (unpushed). What the finished pipeline does and every Q1–Q
 Phase 3**) is **`docs/PHASE2.5-PLAN.md`** (spec); live status is **`docs/PROGRESS-PHASE2.5.md`**.
 
 **P0 warm-up committed `2242256`; P2 guardrails committed `7e76500`; P3 semantic cache committed
-`c3ad6bc`; P4 HyDE committed (hash backfills at P5) — eval gate RAN 2026-07-24, no gain, ships
-gated OFF; P1 streaming PARKED.**
+`c3ad6bc`; P4 HyDE committed — eval gate RAN 2026-07-24, no gain, ships gated OFF; P5 LangGraph
+refactor CODE DONE (uncommitted); P1 streaming PARKED.**
 Per-milestone detail (seams, decisions, gotchas) is in the `phase2.5-hardening` memory + each
 `docs/learning/P<n>-*.md` note + `docs/PROGRESS-PHASE2.5.md` — not re-narrated here. In brief:
 
@@ -33,8 +33,19 @@ Per-milestone detail (seams, decisions, gotchas) is in the `phase2.5-hardening` 
 
 ## Immediate next step
 
-**P5 — LangGraph** orchestration of the read path (⚠ immutable-test risk: graph nodes may relocate
-Phase-2 seams → STOP and ask). P1 streaming stays parked. Spec: `docs/PHASE2.5-PLAN.md`.
+**Commit P5**, then **P6 — chat + upload frontend** (Next.js App Router; glue-tier, move fast; **NO
+auth**, runs on `DEV_OWNER_ID`). P1 streaming stays parked. Spec: `docs/PHASE2.5-PLAN.md`.
+
+_P5 (LangGraph) is CODE DONE, uncommitted._ `retrieve()`'s internals are now a compiled **LangGraph**
+graph (`app/retrieve/retrieve.py`: `_graph()` + module-level `_*_node` coroutines over a `GraphState`
+TypedDict; **fan-out embed→(semantic ‖ lexical)→fan-in fuse** replaces `asyncio.gather`, each arm
+keeps its own `SessionLocal()`; a **reducer** merges both arms' `timings`; the rerank gate is a
+**conditional edge**). **Scope = `retrieve()` only** (ADR `0006`) → `ask.py` + the frozen audit
+contract untouched. **Byte-identical output**, no new config, no migration. New dep
+**`langgraph==1.2.9` pinned** (torch-free on the app import path; coexists with the load-bearing
+pins). Immutable tests green **unedited** (the byte-identical proof); `test_read_graph.py` (9) added.
+Suite **191+5**, 0-skip. **No eval re-run** needed. Only the live parity `curl` on `/ask` is left for
+the architect to eyeball. Details: `docs/learning/P5-langgraph.md` + ADR `0006`.
 
 _P4 (HyDE) is committed and done._ The eval gate ran 2026-07-24 (rerank ON): baseline and HyDE ON
 came back **identical to 16 decimals** (MRR 0.9267 / hit@1 0.8958 / hit@3 0.9375 / hit@5,10 1.000) —

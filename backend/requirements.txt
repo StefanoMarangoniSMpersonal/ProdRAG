@@ -59,3 +59,12 @@ langchain-community<0.4
 # ModuleNotFoundError deep inside instructor. Pinned explicitly for the same reason
 # python-multipart is.
 jsonref==1.1.0
+
+# P5 read-path orchestration. `retrieve()`'s internals are a compiled LangGraph graph
+# (embed -> semantic ‖ lexical -> fuse -> [rerank]); langgraph is imported LAZILY inside
+# app/retrieve/retrieve.py::_graph() so it never loads at app import time and does NOT
+# drag in torch (the reranker's cross-encoder is still the only torch user, loaded on
+# demand). Was already resolved transitively; pinned here now that app code imports it.
+# Proven to coexist with the load-bearing pins — langchain-community<0.4 (ragas' ceiling),
+# langchain-core 1.5.x, redis<6.5 (Celery's cap), ragas 0.4.3 — installed & suite-green.
+langgraph==1.2.9
