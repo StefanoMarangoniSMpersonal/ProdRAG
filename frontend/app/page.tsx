@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 
 import ChatMessage, { type ChatTurn } from "@/components/ChatMessage";
 import Composer from "@/components/Composer";
-import { ApiError, ask } from "@/lib/api";
+import RetrievalControls from "@/components/RetrievalControls";
+import { ApiError, ask, getAskConfig } from "@/lib/api";
+import type { AskControls } from "@/lib/types";
 
 // The chat surface — the home page. It owns a session-local list of turns (no
 // persistence this phase) and drives the ask() lifecycle: on submit it appends the user
@@ -27,7 +29,24 @@ const EXAMPLES = [
 export default function ChatPage() {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [pending, setPending] = useState(false);
+  // The live read-path controls, sent on every /ask. Initialised to a safe all-off shape
+  // and then seeded from the server's real defaults on mount (GET /ask/config) so the
+  // panel mirrors the running env before you override anything. A fetch failure (backend
+  // down) is swallowed — the panel just keeps the defaults rather than blocking the chat.
+  const [controls, setControls] = useState<AskControls>({
+    rerank_enabled: false,
+    cache_enabled: false,
+    rerank_score_floor: null,
+  });
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    getAskConfig()
+      .then(setControls)
+      .catch(() => {
+        /* backend unreachable — keep the local defaults, don't break the page */
+      });
+  }, []);
 
   // Keep the newest turn in view as the conversation grows.
   useEffect(() => {
@@ -52,7 +71,7 @@ export default function ChatPage() {
       );
 
     try {
-      const response = await ask(query);
+      const response = await ask(query, controls);
       settle({ state: "done", response });
     } catch (err) {
       // Distinguish the two failure modes the UI can meaningfully explain: a 400 is the
@@ -119,6 +138,11 @@ export default function ChatPage() {
 
       {/* Composer docks to the bottom; sticky so it stays reachable as the log scrolls. */}
       <div className="sticky bottom-0 -mx-6 bg-gradient-to-t from-ink-950 via-ink-950/95 to-transparent px-6 pb-6 pt-4">
+        <RetrievalControls
+          value={controls}
+          onChange={setControls}
+          disabled={pending}
+        />
         <Composer onSubmit={handleSubmit} pending={pending} />
         <p className="mt-2 text-center font-mono text-[0.65rem] text-fog-500">
           Answers are grounded in the ingested corpus · non-streaming

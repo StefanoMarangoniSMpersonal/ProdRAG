@@ -9,6 +9,8 @@
 // reason the fetch logic is centralized here rather than inlined in the chat page.
 
 import type {
+  AskConfig,
+  AskControls,
   AskResponse,
   DocumentCreated,
   DocumentStatus,
@@ -64,13 +66,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** POST /ask — send a question, await the full grounded answer (non-streaming). */
-export function ask(query: string): Promise<AskResponse> {
+/**
+ * POST /ask — send a question, await the full grounded answer (non-streaming).
+ *
+ * `controls` are the per-request read-path overrides from the chat's control panel
+ * (reranker/cache on-off, floor value). They're spread into the body, so omitting them
+ * sends `{ query }` unchanged — the pre-controls contract — and passing them adds the
+ * knobs the backend reads to flip stages for this one query. This stays the single SSE
+ * swap seam: when streaming unparks, only this function changes.
+ */
+export function ask(
+  query: string,
+  controls?: AskControls,
+): Promise<AskResponse> {
   return request<AskResponse>("/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, ...controls }),
   });
+}
+
+/** GET /ask/config — the server's current read-path defaults, to seed the control panel. */
+export function getAskConfig(): Promise<AskConfig> {
+  return request<AskConfig>("/ask/config");
 }
 
 /**

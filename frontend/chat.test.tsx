@@ -9,11 +9,11 @@ import type { AskResponse } from "@/lib/types";
 // is replaced with a spy we drive per test.
 vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
-  return { ...actual, ask: vi.fn() };
+  return { ...actual, ask: vi.fn(), getAskConfig: vi.fn() };
 });
 
 import ChatPage from "@/app/page";
-import { ApiError, ask } from "@/lib/api";
+import { ApiError, ask, getAskConfig } from "@/lib/api";
 
 const mockedAsk = vi.mocked(ask);
 
@@ -33,6 +33,13 @@ const CANNED: AskResponse = {
 describe("ChatPage", () => {
   beforeEach(() => {
     mockedAsk.mockReset();
+    // The page seeds its controls from GET /ask/config on mount; keep that offline and
+    // deterministic so it never touches the network during the test.
+    vi.mocked(getAskConfig).mockResolvedValue({
+      rerank_enabled: false,
+      cache_enabled: false,
+      rerank_score_floor: null,
+    });
   });
 
   it("renders the grounded answer with its cited and seen sources", async () => {
@@ -51,8 +58,12 @@ describe("ChatPage", () => {
       await screen.findByText(/Proactive autoscaling scales ahead/),
     ).toBeInTheDocument();
 
-    // ask() was called with the trimmed query.
-    expect(mockedAsk).toHaveBeenCalledWith("How does autoscaling work?");
+    // ask() was called with the trimmed query AND the per-request controls object
+    // (authorized spec revision: the live-controls feature makes ask carry the settings).
+    expect(mockedAsk).toHaveBeenCalledWith(
+      "How does autoscaling work?",
+      expect.any(Object),
+    );
 
     // The sources panel: 2 shown, 1 cited — and the cited/seen split is surfaced.
     expect(screen.getByText(/2 shown · 1 cited/)).toBeInTheDocument();

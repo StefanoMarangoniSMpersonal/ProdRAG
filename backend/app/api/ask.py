@@ -68,9 +68,55 @@ logger = logging.getLogger("app.api.ask")
 
 
 class AskRequest(BaseModel):
-    """The question. One field today; a `k` override or filters would land here."""
+    """The question, plus optional per-request read-path overrides.
+
+    The knobs let the chat UI experiment live (flip the reranker/cache, move the floor)
+    without touching process config — the architect's "per-request, not global state"
+    decision. Each is OPTIONAL and means "use the server default" when absent:
+      - `rerank_enabled` / `cache_enabled`: `None` (omitted) → the `Settings` value.
+      - `rerank_score_floor`: since `None` is a MEANINGFUL value here (floor disabled),
+        "use the default" is expressed by OMITTING the field; the endpoint reads
+        `model_fields_set` to tell an omitted floor from an explicit `null`.
+    Phase 3: gate these behind the owner / a debug flag once auth lands — today they
+    are an unauthenticated, single-tenant experiment surface.
+    """
 
     query: str = Field(description="The user's question.")
+    rerank_enabled: bool | None = Field(
+        default=None,
+        description="Override the cross-encoder rerank stage for this query.",
+    )
+    cache_enabled: bool | None = Field(
+        default=None, description="Override the semantic answer cache for this query."
+    )
+    rerank_score_floor: float | None = Field(
+        default=None,
+        description="Override the rerank relevance floor (null disables it). Honoured "
+        "only when present in the payload.",
+    )
+
+
+class AppliedSettings(BaseModel):
+    """The read-path settings that actually governed this answer (UI legibility echo).
+
+    So each message can show WHAT produced it — reranked or not, the floor in force,
+    cache on/off, and whether this specific answer came from the cache. On a cache HIT
+    the rerank/floor fields report the effective config even though retrieval didn't run
+    (the hit short-circuited it) — `cache_hit` is how the UI distinguishes the two.
+    """
+
+    rerank_enabled: bool
+    rerank_score_floor: float | None
+    cache_enabled: bool
+    cache_hit: bool
+
+
+class AskConfig(BaseModel):
+    """Read-path defaults the chat control panel initialises from (GET /ask/config)."""
+
+    rerank_enabled: bool
+    cache_enabled: bool
+    rerank_score_floor: float | None
 
 
 class Source(BaseModel):
@@ -107,6 +153,9 @@ class AskResponse(BaseModel):
     reranked_chunk_ids: list[int]
     sources: list[Source]
     timings_ms: dict[str, float]
+    # The effective read-path settings for this answer (P-UI): lets the chat show what
+    # produced each message so a knob's effect is legible per query.
+    applied: AppliedSettings
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -132,13 +181,41 @@ async def ask(
 
     started = perf_counter()
 
+    # EFFECTIVE read-path settings for THIS request. Each knob is the request override
+    # when given, else the Settings default. `rerank_enabled` / `cache_enabled` use
+    # `None` to mean "not overridden"; `rerank_score_floor`'s `None` is meaningful
+    # (floor disabled), so "not overridden" is detected via `model_fields_set` (was the
+    # field in the payload?). These effective values drive the cache gate, the call into
+    # retrieve(), and the `applied` echo — resolved once, here, so all three agree.
+    rerank_on = (
+        settings.rerank_enabled
+        if request.rerank_enabled is None
+        else request.rerank_enabled
+    )
+    cache_on = (
+        settings.cache_enabled
+        if request.cache_enabled is None
+        else request.cache_enabled
+    )
+    floor = (
+        request.rerank_score_floor
+        if "rerank_score_floor" in request.model_fields_set
+        else settings.rerank_score_floor
+    )
+    applied = AppliedSettings(
+        rerank_enabled=rerank_on,
+        rerank_score_floor=floor,
+        cache_enabled=cache_on,
+        cache_hit=False,  # flipped to True on the hit path below
+    )
+
     # SEMANTIC CACHE (P3), gated. When enabled, embed the query ONCE here and reuse the
     # vector for both the cache lookup and — on a miss — retrieval, so a miss never pays
     # Gemini for the same embed twice. On a HIT we return the stored answer without
     # retrieving or generating. Cache-off: this whole block is skipped, query_embedding
     # stays None, retrieve() embeds internally, and ask() is byte-identical to Q10/P2.
     query_embedding: list[float] | None = None
-    if settings.cache_enabled:
+    if cache_on:
         t = perf_counter()
         query_embedding = await embed_query(query)
         embed_ms = round((perf_counter() - t) * 1000, 1)
@@ -217,12 +294,21 @@ async def ask(
                 # errors.
                 sources=[Source(**s) for s in hit.sources],
                 timings_ms=timings,
+                # Same effective settings, but this answer DID come from the cache.
+                applied=applied.model_copy(update={"cache_hit": True}),
             )
 
     # MISS (or cache disabled). query_embedding is the shared vector on a miss, or None
-    # when the cache is off (retrieve() then embeds internally, exactly as in Q10).
+    # when the cache is off (retrieve() then embeds internally, exactly as in Q10). The
+    # effective rerank/floor overrides ride into retrieve() here; on a hit above they
+    # never applied (retrieval was skipped), which is why `applied.cache_hit` exists.
     t = perf_counter()
-    result = await retrieve(query, query_embedding=query_embedding)
+    result = await retrieve(
+        query,
+        query_embedding=query_embedding,
+        rerank_enabled=rerank_on,
+        rerank_score_floor=floor,
+    )
     retrieve_ms = round((perf_counter() - t) * 1000, 1)
 
     t = perf_counter()
@@ -293,14 +379,15 @@ async def ask(
         "lexical_matched": result.lexical_matched,
         "timings_ms": {**timings, "retrieval": result.timings_ms},
     }
-    # With the cache on, tag the miss so hit-rate is computable from the log stream.
-    # With the cache off the key is omitted, keeping the line byte-identical to Q10/P2.
-    if settings.cache_enabled:
+    # With the cache on (effective), tag the miss so hit-rate is computable from the log
+    # stream. With the cache off the key is omitted, keeping the line byte-identical to
+    # Q10/P2. `cache_on` is the effective flag (request override or Settings default).
+    if cache_on:
         log_record["cache_hit"] = False
     logger.info("ask.query %s", json.dumps(log_record))
 
     row_timings = {**timings, **result.timings_ms}
-    if settings.cache_enabled:
+    if cache_on:
         row_timings["cache_hit"] = False
 
     # The durable half. Best-effort: an audit failure must not cost the user an answer
@@ -332,7 +419,7 @@ async def ask(
     # whole pipeline. Only on a real miss (query_embedding is the vector we looked up
     # with); cache-off leaves it None and this is skipped. cache_set is fail-open — a
     # write failure is logged inside cache.py and never reaches here.
-    if settings.cache_enabled and query_embedding is not None:
+    if cache_on and query_embedding is not None:
         await cache.cache_set(
             query_embedding,
             DEV_OWNER_ID,
@@ -360,4 +447,21 @@ async def ask(
         reranked_chunk_ids=final_ids,
         sources=[Source(**s) for s in source_dicts],
         timings_ms=timings,
+        applied=applied,  # cache_hit stays False — this answer was freshly generated.
+    )
+
+
+@router.get("/ask/config", response_model=AskConfig)
+async def ask_config() -> AskConfig:
+    """The read-path defaults the chat control panel initialises from.
+
+    Read-only: it reflects the current `Settings` so the UI panel opens showing what the
+    server would do BEFORE any per-request override (the architect's "panel mirrors the
+    running env" decision). Phase 3: gate/authorize this with `/ask` once auth lands.
+    """
+    settings = get_settings()
+    return AskConfig(
+        rerank_enabled=settings.rerank_enabled,
+        cache_enabled=settings.cache_enabled,
+        rerank_score_floor=settings.rerank_score_floor,
     )

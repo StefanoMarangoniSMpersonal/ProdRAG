@@ -1,6 +1,6 @@
 "use client";
 
-import type { AskResponse } from "@/lib/types";
+import type { AppliedSettings, AskResponse } from "@/lib/types";
 import SourceList from "./SourceList";
 
 // One turn in the session-local conversation. A user turn is just text; an assistant
@@ -17,6 +17,34 @@ export type ChatTurn =
       response?: AskResponse;
       error?: string;
     };
+
+function AppliedBadges({ applied }: { applied: AppliedSettings }) {
+  // The per-message legibility echo: shows which read-path settings produced THIS answer,
+  // so flipping a control and re-asking is visibly attributable. `cache_hit` is the one
+  // that matters most when experimenting — a hit means retrieval was skipped, so the
+  // rerank/floor badges describe config that didn't actually run for this reply.
+  const badge =
+    "rounded border px-1.5 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.12em]";
+  const on = "border-amber-400/40 bg-amber-400/10 text-amber-300";
+  const off = "border-ink-700 bg-ink-850 text-fog-500";
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      <span className={`${badge} ${applied.rerank_enabled ? on : off}`}>
+        {applied.rerank_enabled ? "reranked" : "no rerank"}
+      </span>
+      {applied.rerank_enabled && applied.rerank_score_floor !== null && (
+        <span className={`${badge} ${on}`}>floor {applied.rerank_score_floor}</span>
+      )}
+      {applied.cache_enabled ? (
+        <span className={`${badge} ${applied.cache_hit ? on : off}`}>
+          {applied.cache_hit ? "cache hit" : "cache miss"}
+        </span>
+      ) : (
+        <span className={`${badge} ${off}`}>cache off</span>
+      )}
+    </div>
+  );
+}
 
 function ThinkingDots() {
   // Three amber dots on the "signal-pulse" keyframe, phase-shifted by animation-delay so
@@ -68,6 +96,9 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
             <p className="whitespace-pre-wrap text-[0.95rem] leading-relaxed text-fog-100">
               {turn.response.answer}
             </p>
+            {turn.response.applied && (
+              <AppliedBadges applied={turn.response.applied} />
+            )}
             <SourceList
               sources={turn.response.sources}
               citations={turn.response.citations}

@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from time import perf_counter
+from typing import Final
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -68,6 +69,19 @@ from app.retrieve.lexical import search_lexical
 from app.retrieve.rerank import rerank
 from app.retrieve.semantic import search_semantic
 from app.retrieve.types import RetrievalResult, ScoredChunk
+
+
+class _Unset:
+    """Sentinel type: 'the caller did not override this knob'.
+
+    Needed for `rerank_score_floor` because `None` is already a MEANINGFUL value there
+    (floor disabled). A plain `None` default couldn't tell "leave it to settings" apart
+    from "explicitly turn the floor off", so the override uses this distinct sentinel
+    and the two states stay separable. `rerank_enabled` doesn't need it — there `None`
+    is free to mean "use settings" since the real values are only True/False."""
+
+
+_UNSET: Final = _Unset()
 
 
 def _ms(since: float) -> float:
@@ -96,6 +110,8 @@ async def retrieve(
     k: int | None = None,
     owner_id: uuid.UUID = DEV_OWNER_ID,
     query_embedding: list[float] | None = None,
+    rerank_enabled: bool | None = None,
+    rerank_score_floor: float | None | _Unset = _UNSET,
 ) -> RetrievalResult:
     """Retrieve the `k` chunks most relevant to `query`, end to end (hybrid).
 
@@ -109,12 +125,26 @@ async def retrieve(
     The `score` on each returned `ScoredChunk` is the RRF **fused** score (rank-based),
     NOT a cosine similarity or `ts_rank_cd` value — fusion discards the arms' scales.
     When the lexical arm matches nothing, RRF reduces to the semantic order, so hybrid
-    never underperforms semantic. When `Settings.rerank_enabled` is set, the fused pool
+    never underperforms semantic. When rerank is on, the fused pool
     (`retrieval_candidate_k` wide) is re-scored by the cross-encoder and the `score`
     becomes the reranker's; otherwise this returns the fused top-k unchanged (Q6).
+
+    Per-call OVERRIDES (the UI live-controls seam): `rerank_enabled` and
+    `rerank_score_floor` normally come from `Settings`, but a caller (the `/ask`
+    endpoint, driven by the chat's control panel) can override them for one query so the
+    same question can be re-run with the reranker on/off or the floor moved, without
+    touching process config. `rerank_enabled=None` (default) means "use the setting"; a
+    bool forces it. `rerank_score_floor` is left as the `_UNSET` sentinel to mean "use
+    the setting" — a real value (incl. an explicit `None` to DISABLE the floor) forces
+    it. Both default to "not overridden", so existing callers are byte-identical.
     """
     settings = get_settings()
     k = settings.retrieval_k if k is None else k
+    # Resolve the rerank gate now (it decides the fetch pool width below); unset defers
+    # to Settings. The FLOOR is resolved later, inside the rerank branch, so `settings`
+    # is only read for `rerank_score_floor` when rerank actually runs (the pre-override
+    # access pattern — a caller can pass a minimal settings object with no floor attr).
+    rerank_on = settings.rerank_enabled if rerank_enabled is None else rerank_enabled
     timings: dict[str, float] = {}
     started = perf_counter()
 
@@ -124,7 +154,7 @@ async def retrieve(
     # reorder the top-k, so the pool must be widened BEFORE the cross-encoder narrows it
     # (retrieve-wide -> rerank-narrow). k stays the FINAL size either way, so callers
     # never change.
-    pool_k = settings.retrieval_candidate_k if settings.rerank_enabled else k
+    pool_k = settings.retrieval_candidate_k if rerank_on else k
 
     # Query STRING -> vector, in the QUERY role. One text in, one vector out. Only the
     # semantic arm needs the vector; the lexical arm searches the raw query string. When
@@ -201,7 +231,7 @@ async def retrieve(
     # by reading query+passage together and returns the top-k (its score replaces the
     # RRF score). OFF: fused_pool is already length k (pool_k == k), so this is just a
     # slice, exactly the Q6 result. Either way `chunks` is the final top-k.
-    if settings.rerank_enabled:
+    if rerank_on:
         r = perf_counter()
         chunks = await rerank(query, fused_pool, top_n=k)
         timings["rerank_ms"] = _ms(r)
@@ -210,8 +240,14 @@ async def retrieve(
         # calibrated), so this is where an absolute "is this actually about the query?"
         # cut belongs. Dropping every chunk is intended, not an error: an empty result
         # is exactly what makes generate() refuse instead of grounding on noise. None
-        # (default) skips the filter entirely — byte-identical to the pre-floor path.
-        floor = settings.rerank_score_floor
+        # (the resolved value) skips the filter — byte-identical to the pre-floor path.
+        # Resolved HERE (not at the top) so `settings.rerank_score_floor` is read only
+        # on the rerank path; the override's `_UNSET` sentinel defers to Settings.
+        floor = (
+            settings.rerank_score_floor
+            if isinstance(rerank_score_floor, _Unset)
+            else rerank_score_floor
+        )
         if floor is not None:
             chunks = [sc for sc in chunks if sc.score >= floor]
             timings["reranked_kept"] = float(len(chunks))

@@ -7,9 +7,41 @@
 //   - DocumentCreated / DocumentStatus  -> app/api/documents.py
 //   - HealthDb                          -> /health/db
 
-/** POST /ask request body. One field today; `k`/filters would land here. */
+/**
+ * POST /ask request body. `query` plus optional per-request read-path overrides that let
+ * the chat experiment live (flip the reranker/cache, move the floor) without touching
+ * server config. Each is optional; omitted means "use the server default". For
+ * `rerank_score_floor`, `null` is a real value (disable the floor) — distinct from
+ * omitting the field. Source of truth: `AskRequest` in app/api/ask.py.
+ */
 export type AskRequest = {
   query: string;
+  rerank_enabled?: boolean;
+  cache_enabled?: boolean;
+  rerank_score_floor?: number | null;
+};
+
+/** The three live-tunable knobs, as the control panel holds them (all concrete). */
+export type AskControls = {
+  rerank_enabled: boolean;
+  cache_enabled: boolean;
+  rerank_score_floor: number | null;
+};
+
+/** GET /ask/config — the server's current read-path defaults the panel initialises from. */
+export type AskConfig = AskControls;
+
+/**
+ * The read-path settings that actually governed one answer (the `applied` echo). Lets a
+ * message show what produced it; `cache_hit` says whether THIS answer came from the cache
+ * (on a hit, retrieval was skipped, so the rerank/floor fields are the effective config,
+ * not something that ran). Source of truth: `AppliedSettings` in app/api/ask.py.
+ */
+export type AppliedSettings = {
+  rerank_enabled: boolean;
+  rerank_score_floor: number | null;
+  cache_enabled: boolean;
+  cache_hit: boolean;
 };
 
 /**
@@ -38,6 +70,9 @@ export type AskResponse = {
   reranked_chunk_ids: number[];
   sources: Source[];
   timings_ms: Record<string, number>;
+  // Optional in the TS type so callers that build a response without it (e.g. older test
+  // fixtures) still typecheck; the live backend always populates it. Consumers must guard.
+  applied?: AppliedSettings;
 };
 
 /** The document lifecycle, as the backend reports it via GET /documents/{id}. */
