@@ -14,6 +14,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     ForeignKey,
@@ -158,5 +159,8 @@ class QueryLog(Base):
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     generation_model: Mapped[str | None] = mapped_column(Text)
+    # Whether the lexical (full-text) arm matched anything for this query (005). Nullable:
+    # NULL means "not recorded" — e.g. a cache hit, where no retrieval ran at all.
+    lexical_matched: Mapped[bool | None] = mapped_column(Boolean)
     timings_ms: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

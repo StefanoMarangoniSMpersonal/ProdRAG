@@ -205,6 +205,16 @@ async def retrieve(
         r = perf_counter()
         chunks = await rerank(query, fused_pool, top_n=k)
         timings["rerank_ms"] = _ms(r)
+        # Relevance floor (gated). The cross-encoder logit is the one calibrated
+        # relevance signal in the pipeline (RRF is rank-based; cosine is poorly
+        # calibrated), so this is where an absolute "is this actually about the query?"
+        # cut belongs. Dropping every chunk is intended, not an error: an empty result
+        # is exactly what makes generate() refuse instead of grounding on noise. None
+        # (default) skips the filter entirely — byte-identical to the pre-floor path.
+        floor = settings.rerank_score_floor
+        if floor is not None:
+            chunks = [sc for sc in chunks if sc.score >= floor]
+            timings["reranked_kept"] = float(len(chunks))
     else:
         chunks = fused_pool[:k]
 
@@ -217,4 +227,7 @@ async def retrieve(
         # per-query log (Q10) records both "what retrieval found" and "what the
         # reranker promoted", and only this snapshot preserves the former.
         candidate_chunk_ids=[sc.chunk.id for sc in fused_pool],
+        # Did the lexical arm contribute? search_lexical returns only real matches, so a
+        # non-empty `lex` means the full-text query hit something. Recorded per query.
+        lexical_matched=len(lex) > 0,
     )

@@ -57,9 +57,16 @@ class RetrievalResult:
     milliseconds — retrieval must never run silently (the "eval is a substrate" rule,
     same reason `IngestResult` carries timings). `query` echoes the original question so
     a result identifies what it answered without the caller having to thread it back.
+
+    `lexical_matched` is whether the lexical (full-text) arm returned at least one match
+    for this query — the RAW arm result, before fusion. `search_lexical` returns only
+    actual matches, so this is simply `len(lex) > 0`. It's the boolean the per-query log
+    records (a true/false, not the id list) so we can later ask in SQL how often the
+    lexical arm actually contributes.
     """
 
     query: str
     chunks: list[ScoredChunk]
     timings_ms: dict[str, float] = field(default_factory=dict)
     candidate_chunk_ids: list[int] = field(default_factory=list)
+    lexical_matched: bool = False

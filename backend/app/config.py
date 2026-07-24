@@ -109,6 +109,18 @@ class Settings(BaseSettings):
     retrieval_candidate_k: int = 50
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # Relevance floor on the reranker logit. None (default) = disabled: retrieve() returns
+    # the full reranked top-k, byte-identical to today. When set AND rerank is ON, chunks
+    # the cross-encoder scored below this logit are dropped from the result; if that
+    # empties the result, generate() refuses locally (empty context -> "I don't know",
+    # no billable call). Acts ONLY on the rerank path — the RRF fused score is rank-based
+    # and unthresholdable (a garbage query's #1 gets the same score as a perfect query's
+    # #1), and bi-encoder cosine is poorly calibrated, so the cross-encoder logit is the
+    # one calibrated relevance signal in the pipeline. The value is empirical: sweep it
+    # against golden.jsonl (recall cost) + traps.jsonl (junk-cut benefit) and pick the
+    # knee. Override via RERANK_SCORE_FLOOR.
+    rerank_score_floor: float | None = None
+
     # Generation (Q8). The final RAG stage: a Gemini *generation* model turns the
     # retrieved chunks into a grounded, cited answer (reuses the same google-genai SDK +
     # GEMINI_API_KEY as embedding — no second key). generation_model is the model id

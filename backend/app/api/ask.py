@@ -288,6 +288,9 @@ async def ask(
         "prompt_tokens": getattr(usage, "prompt_tokens", None),
         "completion_tokens": getattr(usage, "completion_tokens", None),
         "total_tokens": getattr(usage, "total_tokens", None),
+        # Did the lexical arm contribute to this query? (A cache HIT never reaches here,
+        # so this is always a real true/false, never NULL.)
+        "lexical_matched": result.lexical_matched,
         "timings_ms": {**timings, "retrieval": result.timings_ms},
     }
     # With the cache on, tag the miss so hit-rate is computable from the log stream.
@@ -317,6 +320,7 @@ async def ask(
                 completion_tokens=getattr(usage, "completion_tokens", None),
                 total_tokens=getattr(usage, "total_tokens", None),
                 generation_model=get_settings().generation_model,
+                lexical_matched=result.lexical_matched,
                 timings_ms=row_timings,
             )
         )
