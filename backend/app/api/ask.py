@@ -73,13 +73,31 @@ class AskRequest(BaseModel):
     query: str = Field(description="The user's question.")
 
 
+class Source(BaseModel):
+    """One shown passage — the text behind a citation badge.
+
+    `citations` returns chunk ids; a bare `[13]` badge with no passage behind it is
+    useless to a reader, so `AskResponse.sources` carries the actual text of every chunk
+    the model was shown (a superset of `citations`), letting the UI render each passage
+    and highlight the ones the answer drew on. `id` joins back to `citations` / the id
+    lists; `score` is the chunk's fused/rerank score (its rank evidence). `filename` is
+    deferred — `retrieve()` doesn't load the `Document` join today (a v1 follow-up).
+    """
+
+    id: int
+    content: str
+    score: float
+
+
 class AskResponse(BaseModel):
     """The answer plus the evidence trail that produced it.
 
     `citations` are chunk ids the answer drew on (ADR 0002's chunk-level granularity).
     Both id lists are returned, not just the final one: a caller (and the UI) can see
-    what retrieval surfaced AND what survived reranking. `query_id` correlates this
-    response with its log line and its `query_logs` row.
+    what retrieval surfaced AND what survived reranking. `sources` (P6) carries the text
+    of the shown chunks so the UI can back each citation with its passage — response-only
+    (the frozen audit contract is unchanged). `query_id` correlates this response with
+    its log line and its `query_logs` row.
     """
 
     query_id: uuid.UUID
@@ -87,6 +105,7 @@ class AskResponse(BaseModel):
     citations: list[int]
     retrieved_chunk_ids: list[int]
     reranked_chunk_ids: list[int]
+    sources: list[Source]
     timings_ms: dict[str, float]
 
 
@@ -192,6 +211,11 @@ async def ask(
                 citations=hit.valid_citations,
                 retrieved_chunk_ids=hit.retrieved_chunk_ids,
                 reranked_chunk_ids=hit.final_chunk_ids,
+                # Replay the stored passages (plain dicts) back into Source models, so a
+                # hit reproduces exactly the response a fresh miss would. A pre-P6 cache
+                # entry has no `sources` (defaults to []) — degrades to id-only, never
+                # errors.
+                sources=[Source(**s) for s in hit.sources],
                 timings_ms=timings,
             )
 
@@ -210,6 +234,14 @@ async def ask(
     query_id = uuid.uuid4()
     final_ids = [sc.chunk.id for sc in result.chunks]
     context_chars = sum(len(sc.chunk.content) for sc in result.chunks)
+    # The shown passages, response-only (P6): the chunks the model actually saw, in
+    # shown order, so the UI can render every passage and highlight the cited ones. Free
+    # — `result.chunks` is already in memory. Kept as plain dicts here too so the same
+    # value serializes into the cache (asdict-friendly) without a second shape.
+    source_dicts = [
+        {"id": sc.chunk.id, "content": sc.chunk.content, "score": sc.score}
+        for sc in result.chunks
+    ]
 
     # OUTPUT guard (P2). The model was shown ONLY `final_ids`, so any citation
     # outside that set is a phantom (invented, or lifted from the wider candidate
@@ -309,6 +341,7 @@ async def ask(
                 final_chunk_ids=final_ids,
                 context_chars=context_chars,
                 generation_model=get_settings().generation_model,
+                sources=source_dicts,
             ),
         )
 
@@ -321,5 +354,6 @@ async def ask(
         citations=client_citations,
         retrieved_chunk_ids=result.candidate_chunk_ids,
         reranked_chunk_ids=final_ids,
+        sources=[Source(**s) for s in source_dicts],
         timings_ms=timings,
     )

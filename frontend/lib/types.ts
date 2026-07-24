@@ -1,0 +1,66 @@
+// TypeScript mirrors of the backend's Pydantic response shapes. Kept hand-written
+// (not generated) and deliberately narrow: only the fields the UI reads. If the
+// backend contract changes, this file is the single place the frontend learns of it.
+//
+// Sources of truth (backend):
+//   - AskRequest / Source / AskResponse -> app/api/ask.py
+//   - DocumentCreated / DocumentStatus  -> app/api/documents.py
+//   - HealthDb                          -> /health/db
+
+/** POST /ask request body. One field today; `k`/filters would land here. */
+export type AskRequest = {
+  query: string;
+};
+
+/**
+ * One shown passage — the text behind a citation badge. `id` joins back to
+ * `citations` and the id lists; `score` is the chunk's fused/rerank score.
+ * (`filename` is a deferred backend follow-up — not present in v1.)
+ */
+export type Source = {
+  id: number;
+  content: string;
+  score: number;
+};
+
+/**
+ * POST /ask response. `citations` are the chunk ids the answer drew on (a subset
+ * of `sources` by id). `retrieved_chunk_ids` is the pre-rerank candidate pool;
+ * `reranked_chunk_ids` is what the model was actually shown. `sources` carries the
+ * text of those shown chunks so the UI can render each passage and highlight the
+ * cited ones.
+ */
+export type AskResponse = {
+  query_id: string;
+  answer: string;
+  citations: number[];
+  retrieved_chunk_ids: number[];
+  reranked_chunk_ids: number[];
+  sources: Source[];
+  timings_ms: Record<string, number>;
+};
+
+/** The document lifecycle, as the backend reports it via GET /documents/{id}. */
+export type DocumentStatusValue = "pending" | "processing" | "ready" | "failed";
+
+/** POST /documents 202 body — enough to start polling. */
+export type DocumentCreated = {
+  id: string;
+  status: DocumentStatusValue;
+};
+
+/** GET /documents/{id} body. `error` is populated only when `status === "failed"`. */
+export type DocumentStatus = {
+  id: string;
+  status: DocumentStatusValue;
+  filename: string;
+  error: string | null;
+};
+
+/** GET /health/db — the backend liveness + Postgres/pgvector probe. */
+export type HealthDb = {
+  status: string;
+  postgres_version: string;
+  pgvector_installed: boolean;
+  pgvector_version: string | null;
+};

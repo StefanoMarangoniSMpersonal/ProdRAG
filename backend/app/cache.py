@@ -46,7 +46,7 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -73,6 +73,12 @@ class CachedAnswer:
     to report; the audit records `null` there (never a fabricated 0). `citations` is the
     RAW model list; `valid_citations` is the P2-repaired (client-facing) list — both are
     kept so a hit inherits P2's repair-and-flag exactly as the miss that created it did.
+
+    `sources` (P6) are the shown chunks' `{id, content, score}` as plain dicts — kept
+    JSON-native (not `Source` models) so `asdict` + `json.dumps` round-trips them with no
+    custom encoder, and a hit replays the full response the UI needs. Defaulted to `[]`
+    so it is purely additive: pre-P6 constructions (and any cache entry written before
+    this field existed, which reconstructs via `CachedAnswer(**payload)`) stay valid.
     """
 
     answer: str
@@ -83,6 +89,7 @@ class CachedAnswer:
     final_chunk_ids: list[int]
     context_chars: int
     generation_model: str | None
+    sources: list[dict] = field(default_factory=list)
 
 
 @lru_cache

@@ -1,1 +1,120 @@
 @import "tailwindcss";
+
+/*
+ * "Signal" — a precision retrieval instrument.
+ * ------------------------------------------------------------------
+ * Deep ink ground, a single warm amber accent (an instrument readout, not the
+ * purple-on-white AI cliché), an editorial serif for display, a technical sans for
+ * body, and mono for every piece of machine data (chunk ids, scores, timings).
+ * Tailwind v4 is config-less: the theme lives here in @theme, so tokens become
+ * utilities (`bg-ink-900`, `text-amber-400`, `font-display`, ...).
+ */
+
+@theme {
+  /* Type — font families wire to the next/font CSS variables set in layout.tsx. */
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SFMono-Regular", monospace;
+  --font-display: var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+
+  /* Ground + surfaces — cool near-black slate, four steps of elevation. */
+  --color-ink-950: #080a0f;
+  --color-ink-900: #0d1017;
+  --color-ink-850: #12151f;
+  --color-ink-800: #171b27;
+  --color-ink-700: #232838;
+  --color-ink-600: #323949;
+
+  /* Ink text — warm-neutral, three legibility steps. */
+  --color-fog-100: #e8eaf1;
+  --color-fog-300: #b7bcca;
+  --color-fog-400: #8b91a2;
+  --color-fog-500: #656b7c;
+
+  /* Signal — the one accent. Amber, like a lit readout. */
+  --color-amber-300: #f7cd86;
+  --color-amber-400: #efb256;
+  --color-amber-500: #dd9530;
+
+  /* Status — used sparingly (health, failure, ready). */
+  --color-signal-ok: #58c896;
+  --color-signal-warn: #efb256;
+  --color-signal-bad: #ef7d7d;
+}
+
+@layer base {
+  html {
+    /* Amber selection = the accent shows even in a text drag. */
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-ink-950);
+    color: var(--color-fog-100);
+    /* Atmosphere, not a flat fill: two faint amber/ink pools bled into the ground so
+       the page reads as lit rather than painted. Fixed so it doesn't scroll away. */
+    background-image:
+      radial-gradient(
+        60rem 40rem at 78% -8%,
+        rgba(239, 178, 86, 0.06),
+        transparent 60%
+      ),
+      radial-gradient(
+        50rem 40rem at 8% 108%,
+        rgba(88, 130, 200, 0.05),
+        transparent 55%
+      );
+    background-attachment: fixed;
+    font-feature-settings: "cv05", "ss01";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: rgba(239, 178, 86, 0.28);
+    color: var(--color-fog-100);
+  }
+
+  /* A slim, unobtrusive scrollbar in the ink palette. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-700) transparent;
+  }
+}
+
+/* Staggered page-load reveal — one orchestrated entrance, honored per element via
+   an inline animation-delay. Respects reduced-motion. */
+@keyframes signal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility rise {
+  animation: signal-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The "thinking" pulse for the assistant's pending state. */
+@keyframes signal-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@utility pulse-dot {
+  animation: signal-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise,
+  .pulse-dot {
+    animation: none;
+  }
+}
