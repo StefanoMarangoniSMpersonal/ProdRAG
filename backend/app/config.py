@@ -154,6 +154,24 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 3600
     cache_max_entries: int = 500
 
+    # HyDE query transform (P4). hyde_enabled gates the whole stage: OFF (default) leaves
+    # retrieve() byte-identical to Q7 — no LLM call at the top of the read path, and the
+    # offline suite needs no Gemini — so set HYDE_ENABLED=true only for live / eval. When
+    # ON, retrieve() first asks the LLM to write a hypothetical answer PASSAGE for the
+    # query, then embeds THAT (in the DOCUMENT role, like the real chunks) for the
+    # SEMANTIC arm only; the lexical arm keeps the raw query. It's a retrieval-quality
+    # lever kept only if the eval proves it beats the Q7 baseline (ADR 0005). hyde_model
+    # is separate from generation_model so the cheap hypothetical can use a fast model
+    # independent of the answer model. hyde_temperature stays 0 for a deterministic,
+    # reproducible single hypothesis (N=1 — classic HyDE samples N>1 and pools; deferred
+    # on quota). hyde_max_output_tokens caps the passage short (a hypothetical is brief;
+    # also fights verbosity dilution of the embedded vector). Override via HYDE_ENABLED /
+    # HYDE_MODEL / HYDE_TEMPERATURE / HYDE_MAX_OUTPUT_TOKENS.
+    hyde_enabled: bool = False
+    hyde_model: str = "gemini-3.1-flash-lite"
+    hyde_temperature: float = 0.0
+    hyde_max_output_tokens: int = 256
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

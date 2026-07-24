@@ -1,6 +1,6 @@
 # Session Handoff — resume here next time
 
-_Last updated: 2026-07-23._
+_Last updated: 2026-07-24._
 
 **Only what's live and what's next.** Per-milestone detail, seams, rationale and gotchas live in
 `CLAUDE.md`, `docs/PROGRESS.md` (layer tracker) + `docs/PROGRESS-PHASE2.5.md` (P0–P6 status),
@@ -15,30 +15,35 @@ committed `fdd9b85` (unpushed). What the finished pipeline does and every Q1–Q
 `phase2-retrieval` memory. The Phase 2.5 milestone plan (P0–P6, backend-first, **auth deferred to
 Phase 3**) is **`docs/PHASE2.5-PLAN.md`** (spec); live status is **`docs/PROGRESS-PHASE2.5.md`**.
 
-**P0 warm-up committed `2242256`; P2 guardrails committed `7e76500`; P3 semantic cache DONE
-(uncommitted); P1 streaming PARKED.** Per-milestone detail (seams, decisions, gotchas) is in the
-`phase2.5-hardening` memory + each `docs/learning/P<n>-*.md` note + `docs/PROGRESS-PHASE2.5.md` —
-not re-narrated here. In brief:
+**P0 warm-up committed `2242256`; P2 guardrails committed `7e76500`; P3 semantic cache committed
+`c3ad6bc`; P4 HyDE committed (hash backfills at P5) — eval gate RAN 2026-07-24, no gain, ships
+gated OFF; P1 streaming PARKED.**
+Per-milestone detail (seams, decisions, gotchas) is in the `phase2.5-hardening` memory + each
+`docs/learning/P<n>-*.md` note + `docs/PROGRESS-PHASE2.5.md` — not re-narrated here. In brief:
 
-- **P3 (semantic cache)** — new fail-open `app/cache.py` (per-owner in-Redis cosine scan; **no new
-  dep**, reuses the `celery[redis]` client on Redis DB **/1**). `retrieve()` gained `embed_query()`
-  + an optional `query_embedding=` param (share one embed; also feeds P4). `ask.py` gated on
-  `cache_enabled` (**default OFF** → cache-off byte-identical to Q10/P2, immutable `test_ask.py`/
-  `test_retrieve.py` untouched); a hit skips retrieve+generate and replays the **post-guard**
-  answer. **Audit contract accumulated** — `cache_hit` on both sinks (stdout field +
-  `query_logs.timings_ms` JSONB; **no migration**), tokens null on a hit. `test_cache.py` (10) +
-  `test_ask_cache.py` (3), red-first + `docs/learning/P3-semantic-cache.md`. Suite **173+5**,
-  0-skip; **live-proven** (paraphrase hit, retrieve+generate skipped, both sinks correct).
+- **P4 (HyDE query transform)** — new `app/retrieve/hyde.py` `generate_hypothetical(query)` (shared
+  google-genai client, plain text out, **no new dep**). `retrieve()` gained a gated branch at the
+  query→vector step: on `hyde_enabled` (**default OFF** → byte-identical to Q7) it generates a
+  hypothetical answer passage and embeds it in the **DOCUMENT role** (`as_retrieval_document`) for
+  the **semantic arm only**; the lexical arm keeps the raw query. **Fail-open** to raw-query embed
+  on any error; records a `hyde_ms` timing. **N=1**, temp 0, dedicated `hyde_model`; 4 `hyde_*`
+  Settings knobs. `test_hyde.py` (4) + `test_retrieve_hyde.py` (5), red-first +
+  `docs/learning/P4-hyde.md` + **ADR `0005`**. Immutable tests untouched (gate OFF = no-op;
+  `hyde_ms` safe vs the `>=` superset timings assert). Suite **182+5**, 0-skip.
 
 ## Immediate next step
 
-**P4 — Query rewrite / HyDE** (P1 streaming stays parked). Transform the query at the top of
-`retrieve()` — reuse the new `embed_query` seam; the semantic vs lexical arms may take different
-texts. RAG-core fork → **ADR `0005`**, and **eval-gated**: re-run `eval.run` (rerank ON) vs the Q7
-baseline (**MRR 0.927 · hit@1 0.896**) to decide if it stays. Full spec in `docs/PHASE2.5-PLAN.md`;
-status table in `docs/PROGRESS-PHASE2.5.md`.
+**P5 — LangGraph** orchestration of the read path (⚠ immutable-test risk: graph nodes may relocate
+Phase-2 seams → STOP and ask). P1 streaming stays parked. Spec: `docs/PHASE2.5-PLAN.md`.
 
-## Parked architect decisions (open, not blocking P4)
+_P4 (HyDE) is committed and done._ The eval gate ran 2026-07-24 (rerank ON): baseline and HyDE ON
+came back **identical to 16 decimals** (MRR 0.9267 / hit@1 0.8958 / hit@3 0.9375 / hit@5,10 1.000) —
+HyDE only churned ranks 6–10, and the **cross-encoder reranker masks HyDE** (both target the same
+rank-2 near-miss). So **HyDE ships gated OFF** per ADR `0005`; the code stays as a studied,
+reversible lever. Optional/deferred on quota: the isolation A/B with **rerank OFF**, which would
+measure HyDE's raw retrieval effect before the reranker erases it.
+
+## Parked architect decisions (open, not blocking P5)
 
 1. **Trap faithfulness 0.597 artifact** — fix via a refusal-specific metric or an always-explain-
    refusals prompt change (a generator change, your call). Context: `eval-metrics-honest-labeling`
@@ -47,8 +52,9 @@ status table in `docs/PROGRESS-PHASE2.5.md`.
    *immutable* test; restoring them is a spec decision (yours).
 3. **Cache-key freshness (P3)** — the semantic cache keys only on `(owner_id, query_vector)`, so a
    newly-ingested doc isn't reflected until the 1 h TTL lapses. Fold a corpus/model epoch into the
-   key (instant invalidation) vs event-based invalidation vs leave TTL-only — your call, deferred to
-   P4/later. Context: `docs/learning/P3-semantic-cache.md` §7 + `phase2.5-hardening` memory.
+   key (instant invalidation) vs event-based invalidation vs leave TTL-only — your call,
+   **re-parked to the END of Phase 2.5** (2026-07-24: theory-over-impl for now, single-user).
+   Context: `docs/learning/P3-semantic-cache.md` §7 + `phase2.5-hardening` memory.
 
 ## Open blockers / cautions
 

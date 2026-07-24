@@ -42,8 +42,9 @@ Timings (the eval-substrate rule):
     timings feed logs, the `explain-retrieval` skill, and later the eval harness. Same
     discipline, same `perf_counter`/`_ms` helper as `IngestResult`.
 
-Module-level seams (SessionLocal, embed_texts, as_retrieval_query, search_semantic,
-search_lexical, reciprocal_rank_fusion, rerank):
+Module-level seams (SessionLocal, embed_texts, as_retrieval_query,
+as_retrieval_document, generate_hypothetical, search_semantic, search_lexical,
+reciprocal_rank_fusion, rerank):
     Imported here as module globals rather than reached through their packages at each
     call site, so a test can monkeypatch *this module's* copy — point `SessionLocal` at
     a throwaway test container, swap `embed_texts` for a fake that never calls Gemini.
@@ -59,9 +60,10 @@ from time import perf_counter
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.ingest.embed import as_retrieval_query, embed_texts
+from app.ingest.embed import as_retrieval_document, as_retrieval_query, embed_texts
 from app.models import DEV_OWNER_ID
 from app.retrieve.fuse import reciprocal_rank_fusion
+from app.retrieve.hyde import generate_hypothetical
 from app.retrieve.lexical import search_lexical
 from app.retrieve.rerank import rerank
 from app.retrieve.semantic import search_semantic
@@ -126,12 +128,30 @@ async def retrieve(
 
     # Query STRING -> vector, in the QUERY role. One text in, one vector out. Only the
     # semantic arm needs the vector; the lexical arm searches the raw query string. When
-    # the caller already embedded (P3 cache / P4 HyDE share ONE embed with the lookup),
-    # it hands the vector in via `query_embedding=` and we skip the call, recording
-    # embed_ms = 0.0 so the timings key set the immutable tests pin stays present.
+    # the caller already embedded (P3 cache shares ONE embed with the lookup), it hands
+    # the vector in via `query_embedding=` and we skip the call, recording embed_ms = 0.0
+    # so the timings key set the immutable tests pin stays present.
+    #
+    # HyDE (P4, gated): instead of embedding the *question*, ask the LLM for a
+    # hypothetical answer PASSAGE and embed THAT in the DOCUMENT role — so the query
+    # vector lands in the same space as the real chunks (see app/retrieve/hyde.py). Only
+    # the semantic arm is affected; the lexical arm below still searches the raw `query`.
+    # FAIL-OPEN: any generation error degrades to embedding the raw query (the plain
+    # path), so a flaky HyDE call can never break retrieval. Only fires on the no-vector
+    # path — a caller-supplied `query_embedding` still short-circuits everything.
     t = perf_counter()
     if query_embedding is None:
-        query_embedding = await embed_query(query)
+        if settings.hyde_enabled:
+            try:
+                hypothetical = await generate_hypothetical(query)
+                query_embedding = (
+                    await embed_texts([as_retrieval_document(hypothetical)])
+                )[0]
+            except Exception:
+                query_embedding = await embed_query(query)
+            timings["hyde_ms"] = _ms(t)
+        else:
+            query_embedding = await embed_query(query)
         timings["embed_ms"] = _ms(t)
     else:
         timings["embed_ms"] = 0.0
